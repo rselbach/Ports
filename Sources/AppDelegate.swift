@@ -1,5 +1,11 @@
 import AppKit
+import Sparkle
 import SwiftUI
+
+struct SavedServer: Codable {
+    let port: UInt16
+    let directoryPath: String
+}
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -10,9 +16,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var selectedDirectory: URL?
     private var portField: NSTextField?
     private var portWarningLabel: NSTextField?
+    private var updaterController: SPUStandardUpdaterController!
+    
+    private let savedServersKey = "savedServers"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
         setupMenuBar()
+        restoreServers()
         startAutoRefresh()
     }
 
@@ -35,9 +50,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         let menu = NSMenu()
 
-        let ports = portScanner.scan()
+        let scannedPorts = portScanner.scan()
+        let serverPorts = Set(activeServers.map { $0.port })
+        let externalPorts = scannedPorts.filter { !serverPorts.contains($0.port) }
+        
+        let allPorts: [(port: UInt16, isServer: Bool)] = 
+            externalPorts.map { ($0.port, false) } + 
+            activeServers.map { ($0.port, true) }
+        let sortedPorts = allPorts.sorted { $0.port < $1.port }
 
-        if ports.isEmpty {
+        if sortedPorts.isEmpty {
             let item = NSMenuItem(title: "No listening ports found", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
@@ -47,30 +69,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(headerItem)
             menu.addItem(NSMenuItem.separator())
 
-            for port in ports.sorted(by: { $0.port < $1.port }) {
-                let item = NSMenuItem(title: "", action: #selector(copyPort(_:)), keyEquivalent: "")
-                item.attributedTitle = formatPortEntry(port)
-                item.target = self
-                item.representedObject = port.port
-                menu.addItem(item)
+            for entry in sortedPorts {
+                if entry.isServer, let server = activeServers.first(where: { $0.port == entry.port }) {
+                    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                    item.attributedTitle = formatServerEntry(server)
+                    item.submenu = createServerSubmenu(for: server)
+                    menu.addItem(item)
+                } else if let portInfo = externalPorts.first(where: { $0.port == entry.port }) {
+                    let item = NSMenuItem(title: "", action: #selector(copyPort(_:)), keyEquivalent: "")
+                    item.attributedTitle = formatPortEntry(portInfo)
+                    item.target = self
+                    item.representedObject = portInfo.port
+                    menu.addItem(item)
+                }
             }
         }
 
         menu.addItem(NSMenuItem.separator())
-
-        if !activeServers.isEmpty {
-            let serversHeader = NSMenuItem(title: "Active Servers", action: nil, keyEquivalent: "")
-            serversHeader.isEnabled = false
-            menu.addItem(serversHeader)
-
-            for server in activeServers {
-                let title = ":\(server.port) → \(server.directory.lastPathComponent)"
-                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                item.submenu = createServerSubmenu(for: server)
-                menu.addItem(item)
-            }
-            menu.addItem(NSMenuItem.separator())
-        }
 
         let serveItem = NSMenuItem(title: "Serve Directory…", action: #selector(serveDirectory), keyEquivalent: "s")
         serveItem.target = self
@@ -81,6 +96,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "u")
+        updateItem.target = updaterController
+        menu.addItem(updateItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -120,6 +141,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         result.append(NSAttributedString(string: " (pid \(port.pid))", attributes: [
             .foregroundColor: pidColor,
+            .font: regular
+        ]))
+
+        return result
+    }
+    
+    private func formatServerEntry(_ server: HTTPServer) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+
+        let portColor = NSColor.systemCyan
+        let arrowColor = NSColor.secondaryLabelColor
+        let processColor = NSColor.systemOrange
+        let pathColor = NSColor.tertiaryLabelColor
+
+        let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        let regular = NSFont.menuFont(ofSize: 13)
+
+        let portStr = String(format: "%5d", server.port)
+        result.append(NSAttributedString(string: portStr, attributes: [
+            .foregroundColor: portColor,
+            .font: mono
+        ]))
+
+        result.append(NSAttributedString(string: " → ", attributes: [
+            .foregroundColor: arrowColor,
+            .font: regular
+        ]))
+
+        result.append(NSAttributedString(string: server.directory.lastPathComponent, attributes: [
+            .foregroundColor: processColor,
+            .font: regular
+        ]))
+
+        result.append(NSAttributedString(string: " (server)", attributes: [
+            .foregroundColor: pathColor,
             .font: regular
         ]))
 
@@ -318,12 +374,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try server.start()
             activeServers.append(server)
+            saveServers()
             updateMenu()
-
-
         } catch {
             showError("Failed to start server: \(error.localizedDescription)")
         }
+    }
+    
+    private func saveServers() {
+        let saved = activeServers.map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
+        if let data = try? JSONEncoder().encode(saved) {
+            UserDefaults.standard.set(data, forKey: savedServersKey)
+        }
+    }
+    
+    private func restoreServers() {
+        guard let data = UserDefaults.standard.data(forKey: savedServersKey),
+              let saved = try? JSONDecoder().decode([SavedServer].self, from: data) else {
+            return
+        }
+        
+        let usedPorts = Set(portScanner.scan().map { $0.port })
+        var reservedPorts = Set<UInt16>()
+        
+        for s in saved {
+            reservedPorts.insert(s.port)
+        }
+        
+        for s in saved {
+            let directory = URL(fileURLWithPath: s.directoryPath)
+            guard FileManager.default.fileExists(atPath: directory.path) else { continue }
+            
+            var port = s.port
+            if usedPorts.contains(port) || activeServers.contains(where: { $0.port == port }) {
+                port = findAvailablePortExcluding(reservedPorts.union(usedPorts))
+            }
+            reservedPorts.insert(port)
+            
+            let server = HTTPServer(port: port, directory: directory)
+            do {
+                try server.start()
+                activeServers.append(server)
+            } catch {
+                print("Failed to restore server on port \(port): \(error)")
+            }
+        }
+        
+        if !activeServers.isEmpty {
+            saveServers()
+            updateMenu()
+        }
+    }
+    
+    private func findAvailablePortExcluding(_ excluded: Set<UInt16>) -> UInt16 {
+        for port: UInt16 in 8080...9000 {
+            if !excluded.contains(port) {
+                return port
+            }
+        }
+        return UInt16.random(in: 9001...65535)
     }
 
     @objc private func openServerURL(_ sender: NSMenuItem) {
@@ -342,6 +451,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let server = sender.representedObject as? HTTPServer else { return }
         server.stop()
         activeServers.removeAll { $0 === server }
+        saveServers()
         updateMenu()
     }
 

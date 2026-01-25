@@ -14,5 +14,11 @@
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>SUFeedURL</key>
+    <string>https://rselbach.github.io/Ports/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>ePrj/6ZMfGvkCXTYRq+X0H9Ukshi3Wx3+swNSi75Tio=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>
