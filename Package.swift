@@ -17,7 +17,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources",
-            exclude: ["Info.plist"],
+            exclude: ["Info.plist", "Entitlements.plist"],
             resources: [
                 .process("Assets.xcassets")
             ]
