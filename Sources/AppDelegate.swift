@@ -16,16 +16,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var selectedDirectory: URL?
     private var portField: NSTextField?
     private var portWarningLabel: NSTextField?
-    private var updaterController: SPUStandardUpdaterController!
+    private var updaterController: SPUStandardUpdaterController?
     
     private let savedServersKey = "savedServers"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
+        if let frameworksPath = Bundle.main.privateFrameworksPath,
+           FileManager.default.fileExists(atPath: "\(frameworksPath)/Sparkle.framework") {
+            updaterController = SPUStandardUpdaterController(
+                startingUpdater: true,
+                updaterDelegate: nil,
+                userDriverDelegate: nil
+            )
+        }
         setupMenuBar()
         restoreServers()
         startAutoRefresh()
@@ -99,11 +102,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "u")
-        updateItem.target = updaterController
-        menu.addItem(updateItem)
-
-        menu.addItem(NSMenuItem.separator())
+        if let updater = updaterController {
+            let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "u")
+            updateItem.target = updater
+            menu.addItem(updateItem)
+            menu.addItem(NSMenuItem.separator())
+        }
 
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self

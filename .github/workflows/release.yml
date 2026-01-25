@@ -80,7 +80,7 @@ jobs:
           cp .build/release/Ports "${CONTENTS}/MacOS/Ports"
           cp Sources/Info.plist "${CONTENTS}/Info.plist"
           
-          cp -R .build/artifacts/sparkle/Sparkle/Sparkle.framework "${CONTENTS}/Frameworks/"
+          cp -R .build/arm64-apple-macosx/release/Sparkle.framework "${CONTENTS}/Frameworks/"
           
           install_name_tool -add_rpath @executable_path/../Frameworks "${CONTENTS}/MacOS/Ports"
           
