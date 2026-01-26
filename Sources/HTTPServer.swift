@@ -101,7 +101,16 @@ class HTTPServer {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: filePath.path, isDirectory: &isDirectory) {
             if isDirectory.boolValue {
-                serveDirectoryListing(filePath, requestPath: String(parts[1]), connection: connection)
+                let requestPath = String(parts[1])
+                if !requestPath.hasSuffix("/") {
+                    sendRedirect(to: requestPath + "/", connection: connection)
+                    return
+                }
+                if let indexFile = findIndexFile(in: filePath) {
+                    serveFile(indexFile, connection: connection)
+                } else {
+                    serveDirectoryListing(filePath, requestPath: requestPath, connection: connection)
+                }
             } else {
                 serveFile(filePath, connection: connection)
             }
@@ -208,6 +217,29 @@ class HTTPServer {
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+    
+    private func sendRedirect(to location: String, connection: NWConnection) {
+        let response = """
+        HTTP/1.1 301 Moved Permanently\r
+        Location: \(location)\r
+        Content-Length: 0\r
+        Connection: close\r
+        \r
+        
+        """
+        sendResponse(response.data(using: .utf8)!, connection: connection)
+    }
+    
+    private func findIndexFile(in dir: URL) -> URL? {
+        let indexFiles = ["index.html", "index.htm"]
+        for filename in indexFiles {
+            let candidate = dir.appendingPathComponent(filename)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
     }
     
     private func mimeType(for ext: String) -> String {
