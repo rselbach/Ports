@@ -7,7 +7,7 @@ struct SavedServer: Codable {
     let directoryPath: String
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var portScanner = PortScanner()
     private var refreshTimer: Timer?
@@ -229,11 +229,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.contentView = NSHostingView(rootView: PreferencesView())
         window.isReleasedWhenClosed = false
+        window.delegate = self
         preferencesWindow = window
         
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === preferencesWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func createServerSubmenu(for server: HTTPServer) -> NSMenu {
