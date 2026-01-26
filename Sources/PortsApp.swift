@@ -6,7 +6,7 @@ struct PortsApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            PreferencesView()
         }
     }
 }

@@ -17,20 +17,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var portField: NSTextField?
     private var portWarningLabel: NSTextField?
     private var updaterController: SPUStandardUpdaterController?
+    private var preferencesWindow: NSWindow?
     
     private let savedServersKey = "savedServers"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let settings = AppSettings.shared
+        
         if let frameworksPath = Bundle.main.privateFrameworksPath,
            FileManager.default.fileExists(atPath: "\(frameworksPath)/Sparkle.framework") {
             updaterController = SPUStandardUpdaterController(
-                startingUpdater: true,
+                startingUpdater: settings.checkForUpdates,
                 updaterDelegate: nil,
                 userDriverDelegate: nil
             )
         }
         setupMenuBar()
-        restoreServers()
+        if settings.persistServers {
+            restoreServers()
+        }
         startAutoRefresh()
     }
 
@@ -102,12 +107,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(openPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+        
         if let updater = updaterController {
             let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "u")
             updateItem.target = updater
             menu.addItem(updateItem)
-            menu.addItem(NSMenuItem.separator())
         }
+        
+        menu.addItem(NSMenuItem.separator())
 
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -200,6 +210,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         activeServers.forEach { $0.stop() }
         NSApplication.shared.terminate(nil)
+    }
+    
+    @objc private func openPreferences() {
+        if let window = preferencesWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ports Preferences"
+        window.center()
+        window.contentView = NSHostingView(rootView: PreferencesView())
+        window.isReleasedWhenClosed = false
+        preferencesWindow = window
+        
+        NSApp.setActivationPolicy(.regular)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func createServerSubmenu(for server: HTTPServer) -> NSMenu {
@@ -365,7 +399,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func findAvailablePort() -> UInt16 {
-        for port: UInt16 in 8080...8180 {
+        let startPort = AppSettings.shared.defaultPort
+        for port in startPort...min(startPort + 100, 65535) {
             if !isPortInUse(port) {
                 return port
             }
@@ -386,6 +421,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func saveServers() {
+        guard AppSettings.shared.persistServers else {
+            UserDefaults.standard.removeObject(forKey: savedServersKey)
+            return
+        }
         let saved = activeServers.map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
         if let data = try? JSONEncoder().encode(saved) {
             UserDefaults.standard.set(data, forKey: savedServersKey)
