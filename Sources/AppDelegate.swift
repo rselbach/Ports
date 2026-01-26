@@ -7,10 +7,11 @@ struct SavedServer: Codable {
     let directoryPath: String
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var portScanner = PortScanner()
     private var refreshTimer: Timer?
+    private var statusMenu: NSMenu!
     private var activeServers: [HTTPServer] = []
     private var folderPathField: NSTextField?
     private var selectedDirectory: URL?
@@ -46,7 +47,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Ports")
         }
 
-        updateMenu()
+        statusMenu = NSMenu()
+        statusMenu.delegate = self
+        statusItem.menu = statusMenu
+        rebuildMenuItems()
+    }
+    
+    func menuWillOpen(_ menu: NSMenu) {
+        rebuildMenuItems()
     }
 
     private func startAutoRefresh() {
@@ -54,9 +62,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.updateMenu()
         }
     }
-
+    
     private func updateMenu() {
-        let menu = NSMenu()
+        rebuildMenuItems()
+    }
+
+    private func rebuildMenuItems() {
+        let menu = statusMenu!
+        menu.removeAllItems()
 
         let scannedPorts = portScanner.scan()
         let serverPorts = Set(activeServers.map { $0.port })
@@ -122,8 +135,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-
-        statusItem.menu = menu
     }
 
     private func formatPortEntry(_ port: PortInfo) -> NSAttributedString {
