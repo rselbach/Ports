@@ -4,15 +4,6 @@ struct PreferencesView: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var portText: String = ""
     
-    private var portFormatter: NumberFormatter {
-        let formatter = NumberFormatter()
-        formatter.allowsFloats = false
-        formatter.minimum = NSNumber(value: 1024)
-        formatter.maximum = NSNumber(value: 65535)
-        formatter.numberStyle = .none
-        return formatter
-    }
-    
     var body: some View {
         Form {
             Section {

@@ -10,13 +10,13 @@ struct SavedServer: Codable {
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var portScanner = PortScanner()
-    private var needsMenuRefresh = false
     private var statusMenu: NSMenu!
     private var activeServers: [HTTPServer] = []
     private var folderPathField: NSTextField?
     private var selectedDirectory: URL?
     private var portField: NSTextField?
     private var portWarningLabel: NSTextField?
+    private var portObserver: NSObjectProtocol?
     private var updaterController: SPUStandardUpdaterController?
     private var preferencesWindow: NSWindow?
     
@@ -53,14 +53,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     
     func menuWillOpen(_ menu: NSMenu) {
-        rebuildMenuItems()
+        // Scan ports on background queue to avoid blocking UI
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let ports = self.portScanner.scan()
+            DispatchQueue.main.async {
+                self.pendingScanResult = ports
+                self.rebuildMenuItems()
+            }
+        }
     }
+
+    private var pendingScanResult: [PortInfo] = []
 
     private func rebuildMenuItems() {
         let menu = statusMenu!
         menu.removeAllItems()
 
-        let scannedPorts = portScanner.scan()
+        // Use cached result if available, otherwise scan on background queue
+        let scannedPorts = pendingScanResult.isEmpty ? portScanner.scan() : pendingScanResult
+        pendingScanResult = []
         let serverPorts = Set(activeServers.map { $0.port })
         let externalPorts = scannedPorts.filter { !serverPorts.contains($0.port) }
         
@@ -307,17 +319,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         container.addSubview(warningLabel)
         portWarningLabel = warningLabel
 
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(portFieldDidChange),
-            name: NSControl.textDidChangeNotification,
-            object: portInput
-        )
+        portObserver = NotificationCenter.default.addObserver(
+            forName: NSControl.textDidChangeNotification,
+            object: portInput,
+            queue: nil
+        ) { [weak self] _ in
+            self?.portFieldDidChange()
+        }
         validatePort()
 
         alert.accessoryView = container
 
         let response = alert.runModal()
+        if let observer = portObserver {
+            NotificationCenter.default.removeObserver(observer)
+            portObserver = nil
+        }
         guard response == .alertFirstButtonReturn else { return }
 
         let directory: URL
@@ -350,6 +367,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             return
         }
 
+        if isPortInUse(port) {
+            showError("Port \(port) is already in use.")
+            NSApp.setActivationPolicy(.accessory)
+            return
+        }
+
         startServer(port: port, directory: directory)
         NSApp.setActivationPolicy(.accessory)
     }
@@ -367,7 +390,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         }
     }
 
-    @objc private func portFieldDidChange() {
+    private func portFieldDidChange() {
         validatePort()
     }
 
@@ -435,21 +458,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         
         let usedPorts = Set(portScanner.scan().map { $0.port })
         var reservedPorts = Set<UInt16>()
-        
-        for s in saved {
-            reservedPorts.insert(s.port)
-        }
-        
+
         for s in saved {
             let directory = URL(fileURLWithPath: s.directoryPath)
             guard FileManager.default.fileExists(atPath: directory.path) else { continue }
-            
+
             var port = s.port
-            if usedPorts.contains(port) || activeServers.contains(where: { $0.port == port }) {
-                port = findAvailablePortExcluding(reservedPorts.union(usedPorts))
+            let takenPorts = reservedPorts.union(usedPorts).union(Set(activeServers.map { $0.port }))
+            if takenPorts.contains(port) {
+                port = findAvailablePortExcluding(takenPorts)
             }
             reservedPorts.insert(port)
-            
+
             let server = HTTPServer(port: port, directory: directory)
             do {
                 try server.start()
@@ -458,7 +478,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
                 print("Failed to restore server on port \(port): \(error)")
             }
         }
-        
+
         if !activeServers.isEmpty {
             saveServers()
         }

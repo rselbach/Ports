@@ -57,9 +57,10 @@ class PortScanner {
             
             // Parse address:port from NAME field
             // Format: "127.0.0.1:8080 (LISTEN)" or "*:8080 (LISTEN)" or "[::]:8080 (LISTEN)"
-            guard let lastColon = nameField.lastIndex(of: ":"),
-                  let parenStart = nameField.firstIndex(of: "(") else { continue }
-            
+            // Handle IPv6 by finding the LAST colon before the parenthesis
+            guard let parenStart = nameField.firstIndex(of: "("),
+                  let lastColon = nameField[..<parenStart].lastIndex(of: ":") else { continue }
+
             let portString = String(nameField[nameField.index(after: lastColon)..<parenStart])
                 .trimmingCharacters(in: .whitespaces)
             guard let port = UInt16(portString) else { continue }

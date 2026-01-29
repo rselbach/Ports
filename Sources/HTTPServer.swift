@@ -11,6 +11,7 @@ class HTTPServer {
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private let maxConnections = 50
+    private let connectionsLock = NSLock()
     weak var delegate: HTTPServerDelegate?
     
     var isRunning: Bool { listener != nil }
@@ -39,7 +40,9 @@ class HTTPServer {
             case .failed(let error):
                 self.delegate?.server(self, didFailWithError: error)
             case .cancelled:
+                self.connectionsLock.lock()
                 self.connections.removeAll { $0.state == .cancelled }
+                self.connectionsLock.unlock()
             default:
                 break
             }
@@ -49,23 +52,30 @@ class HTTPServer {
     }
     
     func stop() {
+        connectionsLock.lock()
         connections.forEach { $0.cancel() }
         connections.removeAll()
+        connectionsLock.unlock()
         listener?.cancel()
         listener = nil
     }
     
     private func handleConnection(_ connection: NWConnection) {
+        connectionsLock.lock()
         guard connections.count < maxConnections else {
+            connectionsLock.unlock()
             sendError(connection, status: 503, message: "Service Unavailable - Too many connections")
             connection.cancel()
             return
         }
         connections.append(connection)
-        
+        connectionsLock.unlock()
+
         connection.stateUpdateHandler = { [weak self] state in
             if case .cancelled = state {
+                self?.connectionsLock.lock()
                 self?.connections.removeAll { $0 === connection }
+                self?.connectionsLock.unlock()
             }
         }
         
@@ -105,16 +115,16 @@ class HTTPServer {
         path = path.removingPercentEncoding ?? path
         
         // Prevent path traversal by checking if resolved path stays within root
-        let filePath = directory.appendingPathComponent(path)
-        guard filePath.path.hasPrefix(directory.resolvingSymlinksInPath().path) else {
+        let filePath = directory.appendingPathComponent(path).standardizedFileURL
+        let rootDir = directory.resolvingSymlinksInPath().standardizedFileURL
+        guard filePath.path.hasPrefix(rootDir.path) else {
             sendError(connection, status: 403, message: "Forbidden")
             return
         }
         
         if path == "/" {
-            let indexPath = directory.appendingPathComponent("/index.html")
-            var isIndexDir: ObjCBool = false
-            if !FileManager.default.fileExists(atPath: indexPath.path, isDirectory: &isIndexDir) {
+            let indexPath = directory.appendingPathComponent("index.html")
+            if !FileManager.default.fileExists(atPath: indexPath.path) {
                 // No index.html, serve directory listing
                 serveDirectoryListing(directory, requestPath: "/", connection: connection)
                 return
@@ -224,10 +234,11 @@ class HTTPServer {
     
     private func sendError(_ connection: NWConnection, status: Int, message: String) {
         let body = "<html><body><h1>\(status) \(message)</h1></body></html>"
+        let bodyData = body.data(using: .utf8)!
         let response = """
         HTTP/1.1 \(status) \(message)\r
         Content-Type: text/html\r
-        Content-Length: \(body.count)\r
+        Content-Length: \(bodyData.count)\r
         Connection: close\r
         \r
         \(body)
