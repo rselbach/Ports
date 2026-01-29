@@ -54,9 +54,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         rebuildMenuItems()
     }
 
+    private var menuIsOpen = false
+    
     private func startAutoRefresh() {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.updateMenu()
@@ -64,7 +67,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     
     private func updateMenu() {
+        guard menuIsOpen else { return }
         rebuildMenuItems()
+    }
+    
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
     }
 
     private func rebuildMenuItems() {
