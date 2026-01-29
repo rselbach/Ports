@@ -10,7 +10,7 @@ struct SavedServer: Codable {
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var portScanner = PortScanner()
-    private var refreshTimer: Timer?
+    private var needsMenuRefresh = false
     private var statusMenu: NSMenu!
     private var activeServers: [HTTPServer] = []
     private var folderPathField: NSTextField?
@@ -37,7 +37,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         if settings.persistServers {
             restoreServers()
         }
-        startAutoRefresh()
     }
 
     private func setupMenuBar() {
@@ -54,25 +53,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     
     func menuWillOpen(_ menu: NSMenu) {
-        menuIsOpen = true
         rebuildMenuItems()
-    }
-
-    private var menuIsOpen = false
-    
-    private func startAutoRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.updateMenu()
-        }
-    }
-    
-    private func updateMenu() {
-        guard menuIsOpen else { return }
-        rebuildMenuItems()
-    }
-    
-    func menuDidClose(_ menu: NSMenu) {
-        menuIsOpen = false
     }
 
     private func rebuildMenuItems() {
@@ -119,12 +100,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         let serveItem = NSMenuItem(title: "Serve Directory…", action: #selector(serveDirectory), keyEquivalent: "s")
         serveItem.target = self
         menu.addItem(serveItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
-        refreshItem.target = self
-        menu.addItem(refreshItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -222,10 +197,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         }
     }
 
-    @objc private func refreshNow() {
-        updateMenu()
-    }
-
     @objc private func quit() {
         activeServers.forEach { $0.stop() }
         NSApplication.shared.terminate(nil)
@@ -239,7 +210,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         }
         
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 350),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -291,8 +262,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             NSApp.activate(ignoringOtherApps: true)
 
             self.showServeDialog()
-
-            NSApp.setActivationPolicy(.accessory)
         }
     }
 
@@ -377,10 +346,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             port = p
         } else {
             showError("Invalid port number. Must be 1024-65535.")
+            NSApp.setActivationPolicy(.accessory)
             return
         }
 
         startServer(port: port, directory: directory)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc private func chooseFolderAction() {
@@ -440,7 +411,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             try server.start()
             activeServers.append(server)
             saveServers()
-            updateMenu()
         } catch {
             showError("Failed to start server: \(error.localizedDescription)")
         }
@@ -491,7 +461,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         
         if !activeServers.isEmpty {
             saveServers()
-            updateMenu()
         }
     }
     
@@ -505,8 +474,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     @objc private func openServerURL(_ sender: NSMenuItem) {
-        guard let server = sender.representedObject as? HTTPServer else { return }
-        let url = URL(string: "http://localhost:\(server.port)")!
+        guard let server = sender.representedObject as? HTTPServer,
+              let url = URL(string: "http://localhost:\(server.port)") else {
+            return
+        }
         NSWorkspace.shared.open(url)
     }
 
@@ -521,7 +492,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         server.stop()
         activeServers.removeAll { $0 === server }
         saveServers()
-        updateMenu()
     }
 
     private func showError(_ message: String) {

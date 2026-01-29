@@ -41,22 +41,33 @@ class PortScanner {
         let lines = output.components(separatedBy: "\n")
 
         for line in lines.dropFirst() {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("COMMAND") else { continue }
+            
+            // Split line on whitespace
+            let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
             guard parts.count >= 9 else { continue }
 
+            // PID is in column 2 (index 1)
             guard let pid = Int32(parts[1]) else { continue }
 
-            let nameField = String(parts[8])
-
-            guard let colonIndex = nameField.lastIndex(of: ":"),
-                  let port = UInt16(nameField[nameField.index(after: colonIndex)...]) else {
-                continue
-            }
+            // NAME field is the last column (index 8 or later if command has spaces)
+            // Find the column containing ":port" pattern with LISTEN state
+            let nameField = String(parts[8...].joined(separator: " "))
+            
+            // Parse address:port from NAME field
+            // Format: "127.0.0.1:8080 (LISTEN)" or "*:8080 (LISTEN)" or "[::]:8080 (LISTEN)"
+            guard let lastColon = nameField.lastIndex(of: ":"),
+                  let parenStart = nameField.firstIndex(of: "(") else { continue }
+            
+            let portString = String(nameField[nameField.index(after: lastColon)..<parenStart])
+                .trimmingCharacters(in: .whitespaces)
+            guard let port = UInt16(portString) else { continue }
 
             guard !seen.contains(port) else { continue }
             seen.insert(port)
 
-            let address = String(nameField[..<colonIndex])
+            let address = String(nameField[..<lastColon]).trimmingCharacters(in: .whitespaces)
             let processName = getProcessName(pid: pid)
 
             ports.append(PortInfo(
@@ -71,12 +82,21 @@ class PortScanner {
     }
 
     private func getProcessName(pid: Int32) -> String {
+        // Guard against invalid PIDs
+        guard pid > 0 else { return "invalid" }
+        
         let nameBuffer = UnsafeMutablePointer<CChar>.allocate(capacity: Int(MAXPATHLEN))
         defer { nameBuffer.deallocate() }
-
+        
+        // Clear buffer to ensure null termination
+        nameBuffer.initialize(repeating: 0, count: Int(MAXPATHLEN))
+        
         let length = proc_name(pid, nameBuffer, UInt32(MAXPATHLEN))
         if length > 0 {
-            return String(cString: nameBuffer)
+            let name = String(cString: nameBuffer)
+            // Validate the name isn't empty or just whitespace
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty ? "unknown" : name
         }
         return "unknown"
     }

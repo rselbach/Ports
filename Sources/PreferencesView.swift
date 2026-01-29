@@ -4,6 +4,15 @@ struct PreferencesView: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var portText: String = ""
     
+    private var portFormatter: NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.allowsFloats = false
+        formatter.minimum = NSNumber(value: 1024)
+        formatter.maximum = NSNumber(value: 65535)
+        formatter.numberStyle = .none
+        return formatter
+    }
+    
     var body: some View {
         Form {
             Section {
@@ -16,16 +25,24 @@ struct PreferencesView: View {
             Section {
                 HStack {
                     Text("Default Port:")
-                    TextField("", text: $portText)
+                    TextField("8080", text: $portText)
                         .frame(width: 80)
+                        .multilineTextAlignment(.center)
                         .onAppear {
                             portText = String(settings.defaultPort)
                         }
                         .onChange(of: portText) { newValue in
-                            if let port = UInt16(newValue), port >= 1024 {
+                            // Strip non-numeric characters
+                            let filtered = newValue.filter { $0.isNumber }
+                            if filtered != newValue {
+                                portText = filtered
+                            }
+                            // Validate range
+                            if let port = UInt16(filtered), port >= 1024 {
                                 settings.defaultPort = port
                             }
                         }
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
                     Text("(1024–65535)")
                         .foregroundColor(.secondary)
                         .font(.caption)
@@ -36,7 +53,7 @@ struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 280)
+        .frame(width: 500, height: 350)
         .onAppear {
             settings.syncLoginItemState()
         }

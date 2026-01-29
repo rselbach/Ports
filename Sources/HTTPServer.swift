@@ -1,11 +1,17 @@
 import Foundation
 import Network
 
+protocol HTTPServerDelegate: AnyObject {
+    func server(_ server: HTTPServer, didFailWithError error: Error)
+}
+
 class HTTPServer {
     let port: UInt16
     let directory: URL
     private var listener: NWListener?
     private var connections: [NWConnection] = []
+    private let maxConnections = 50
+    weak var delegate: HTTPServerDelegate?
     
     var isRunning: Bool { listener != nil }
     
@@ -18,16 +24,22 @@ class HTTPServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         
-        listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+            throw NSError(domain: "HTTPServer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid port: \(port)"])
+        }
+        listener = try NWListener(using: params, on: endpointPort)
         
         listener?.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
         
-        listener?.stateUpdateHandler = { state in
+        listener?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .failed(let error):
-                print("Server failed: \(error)")
+                self.delegate?.server(self, didFailWithError: error)
+            case .cancelled:
+                self.connections.removeAll { $0.state == .cancelled }
             default:
                 break
             }
@@ -44,6 +56,11 @@ class HTTPServer {
     }
     
     private func handleConnection(_ connection: NWConnection) {
+        guard connections.count < maxConnections else {
+            sendError(connection, status: 503, message: "Service Unavailable - Too many connections")
+            connection.cancel()
+            return
+        }
         connections.append(connection)
         
         connection.stateUpdateHandler = { [weak self] state in
@@ -87,16 +104,22 @@ class HTTPServer {
         var path = String(parts[1])
         path = path.removingPercentEncoding ?? path
         
-        if path.contains("..") {
+        // Prevent path traversal by checking if resolved path stays within root
+        let filePath = directory.appendingPathComponent(path)
+        guard filePath.path.hasPrefix(directory.resolvingSymlinksInPath().path) else {
             sendError(connection, status: 403, message: "Forbidden")
             return
         }
         
         if path == "/" {
-            path = "/index.html"
+            let indexPath = directory.appendingPathComponent("/index.html")
+            var isIndexDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: indexPath.path, isDirectory: &isIndexDir) {
+                // No index.html, serve directory listing
+                serveDirectoryListing(directory, requestPath: "/", connection: connection)
+                return
+            }
         }
-        
-        let filePath = directory.appendingPathComponent(path)
         
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: filePath.path, isDirectory: &isDirectory) {
