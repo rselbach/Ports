@@ -111,18 +111,18 @@ class HTTPServer {
             return
         }
         
-        var path = String(parts[1])
-        path = path.removingPercentEncoding ?? path
+        let rawPath = String(parts[1])
+        let (requestPath, relativePath) = normalizedRequestPath(rawPath)
         
         // Prevent path traversal by checking if resolved path stays within root
-        let filePath = directory.appendingPathComponent(path).standardizedFileURL
+        let filePath = directory.appendingPathComponent(relativePath).resolvingSymlinksInPath().standardizedFileURL
         let rootDir = directory.resolvingSymlinksInPath().standardizedFileURL
-        guard filePath.path.hasPrefix(rootDir.path) else {
+        guard isPath(filePath, inside: rootDir) else {
             sendError(connection, status: 403, message: "Forbidden")
             return
         }
         
-        if path == "/" {
+        if requestPath == "/" {
             let indexPath = directory.appendingPathComponent("index.html")
             if !FileManager.default.fileExists(atPath: indexPath.path) {
                 // No index.html, serve directory listing
@@ -134,7 +134,6 @@ class HTTPServer {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: filePath.path, isDirectory: &isDirectory) {
             if isDirectory.boolValue {
-                let requestPath = String(parts[1])
                 if !requestPath.hasSuffix("/") {
                     sendRedirect(to: requestPath + "/", connection: connection)
                     return
@@ -147,7 +146,7 @@ class HTTPServer {
             } else {
                 serveFile(filePath, connection: connection)
             }
-        } else if path == "/index.html" {
+        } else if requestPath == "/index.html" {
             serveDirectoryListing(directory, requestPath: "/", connection: connection)
         } else {
             sendError(connection, status: 404, message: "Not Found")
@@ -170,7 +169,7 @@ class HTTPServer {
         
         """
         
-        var responseData = response.data(using: .utf8)!
+        var responseData = Data(response.utf8)
         responseData.append(data)
         
         sendResponse(responseData, connection: connection)
@@ -216,7 +215,7 @@ class HTTPServer {
         </html>
         """
         
-        let data = html.data(using: .utf8)!
+        let data = Data(html.utf8)
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: text/html; charset=utf-8\r
@@ -226,7 +225,7 @@ class HTTPServer {
         
         """
         
-        var responseData = response.data(using: .utf8)!
+        var responseData = Data(response.utf8)
         responseData.append(data)
         
         sendResponse(responseData, connection: connection)
@@ -234,7 +233,7 @@ class HTTPServer {
     
     private func sendError(_ connection: NWConnection, status: Int, message: String) {
         let body = "<html><body><h1>\(status) \(message)</h1></body></html>"
-        let bodyData = body.data(using: .utf8)!
+        let bodyData = Data(body.utf8)
         let response = """
         HTTP/1.1 \(status) \(message)\r
         Content-Type: text/html\r
@@ -244,7 +243,7 @@ class HTTPServer {
         \(body)
         """
         
-        sendResponse(response.data(using: .utf8)!, connection: connection)
+        sendResponse(Data(response.utf8), connection: connection)
     }
     
     private func sendResponse(_ data: Data, connection: NWConnection) {
@@ -262,7 +261,7 @@ class HTTPServer {
         \r
         
         """
-        sendResponse(response.data(using: .utf8)!, connection: connection)
+        sendResponse(Data(response.utf8), connection: connection)
     }
     
     private func findIndexFile(in dir: URL) -> URL? {
@@ -291,5 +290,21 @@ class HTTPServer {
         case "md": return "text/markdown; charset=utf-8"
         default: return "application/octet-stream"
         }
+    }
+
+    private func normalizedRequestPath(_ rawPath: String) -> (requestPath: String, relativePath: String) {
+        let pathPart = rawPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let fragmentPart = pathPart.first?.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let cleaned = fragmentPart?.first.map(String.init) ?? rawPath
+        let decoded = cleaned.removingPercentEncoding ?? cleaned
+        let requestPath = decoded.isEmpty ? "/" : decoded
+        let relativePath = requestPath == "/" ? "" : requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return (requestPath, relativePath)
+    }
+
+    private func isPath(_ path: URL, inside root: URL) -> Bool {
+        let rootPath = root.path
+        let filePath = path.path
+        return filePath == rootPath || filePath.hasPrefix(rootPath + "/")
     }
 }

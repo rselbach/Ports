@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private var portScanner = PortScanner()
     private var statusMenu: NSMenu!
     private var activeServers: [HTTPServer] = []
+    private let activeServersLock = NSLock()
     private var folderPathField: NSTextField?
     private var selectedDirectory: URL?
     private var portField: NSTextField?
@@ -73,12 +74,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         // Use cached result if available, otherwise scan on background queue
         let scannedPorts = pendingScanResult.isEmpty ? portScanner.scan() : pendingScanResult
         pendingScanResult = []
-        let serverPorts = Set(activeServers.map { $0.port })
+        let serversSnapshot = snapshotServers()
+        let serverPorts = Set(serversSnapshot.map { $0.port })
         let externalPorts = scannedPorts.filter { !serverPorts.contains($0.port) }
         
         let allPorts: [(port: UInt16, isServer: Bool)] = 
             externalPorts.map { ($0.port, false) } + 
-            activeServers.map { ($0.port, true) }
+            serversSnapshot.map { ($0.port, true) }
         let sortedPorts = allPorts.sorted { $0.port < $1.port }
 
         if sortedPorts.isEmpty {
@@ -92,7 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             menu.addItem(NSMenuItem.separator())
 
             for entry in sortedPorts {
-                if entry.isServer, let server = activeServers.first(where: { $0.port == entry.port }) {
+                if entry.isServer, let server = serversSnapshot.first(where: { $0.port == entry.port }) {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                     item.attributedTitle = formatServerEntry(server)
                     item.submenu = createServerSubmenu(for: server)
@@ -210,7 +212,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     @objc private func quit() {
-        activeServers.forEach { $0.stop() }
+        snapshotServers().forEach { $0.stop() }
         NSApplication.shared.terminate(nil)
     }
     
@@ -410,7 +412,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     private func isPortInUse(_ port: UInt16) -> Bool {
-        if activeServers.contains(where: { $0.port == port }) {
+        if snapshotServers().contains(where: { $0.port == port }) {
             return true
         }
 
@@ -432,7 +434,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         let server = HTTPServer(port: port, directory: directory)
         do {
             try server.start()
-            activeServers.append(server)
+            addServer(server)
             saveServers()
         } catch {
             showError("Failed to start server: \(error.localizedDescription)")
@@ -444,7 +446,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             UserDefaults.standard.removeObject(forKey: savedServersKey)
             return
         }
-        let saved = activeServers.map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
+        let saved = snapshotServers().map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
         if let data = try? JSONEncoder().encode(saved) {
             UserDefaults.standard.set(data, forKey: savedServersKey)
         }
@@ -464,7 +466,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             guard FileManager.default.fileExists(atPath: directory.path) else { continue }
 
             var port = s.port
-            let takenPorts = reservedPorts.union(usedPorts).union(Set(activeServers.map { $0.port }))
+            let takenPorts = reservedPorts.union(usedPorts).union(Set(snapshotServers().map { $0.port }))
             if takenPorts.contains(port) {
                 port = findAvailablePortExcluding(takenPorts)
             }
@@ -473,13 +475,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             let server = HTTPServer(port: port, directory: directory)
             do {
                 try server.start()
-                activeServers.append(server)
+                addServer(server)
             } catch {
                 print("Failed to restore server on port \(port): \(error)")
             }
         }
 
-        if !activeServers.isEmpty {
+        if !snapshotServers().isEmpty {
             saveServers()
         }
     }
@@ -510,8 +512,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     @objc private func stopServer(_ sender: NSMenuItem) {
         guard let server = sender.representedObject as? HTTPServer else { return }
         server.stop()
-        activeServers.removeAll { $0 === server }
+        removeServer(server)
         saveServers()
+    }
+
+    private func snapshotServers() -> [HTTPServer] {
+        activeServersLock.lock()
+        let snapshot = activeServers
+        activeServersLock.unlock()
+        return snapshot
+    }
+
+    private func addServer(_ server: HTTPServer) {
+        activeServersLock.lock()
+        activeServers.append(server)
+        activeServersLock.unlock()
+    }
+
+    private func removeServer(_ server: HTTPServer) {
+        activeServersLock.lock()
+        activeServers.removeAll { $0 === server }
+        activeServersLock.unlock()
     }
 
     private func showError(_ message: String) {
