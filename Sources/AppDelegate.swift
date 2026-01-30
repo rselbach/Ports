@@ -23,6 +23,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     
     private let savedServersKey = "savedServers"
 
+    private struct MenuEntryColors {
+        let portColor: NSColor
+        let arrowColor: NSColor
+        let processColor: NSColor
+        let detailColor: NSColor
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let settings = AppSettings.shared
         
@@ -134,13 +141,70 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         menu.addItem(quitItem)
     }
 
+    private func useDarkMenuColors() -> Bool {
+        let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        switch match {
+        case .darkAqua:
+            return true
+        case .aqua:
+            return false
+        case .none:
+            return false
+        case .some:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func portEntryColors() -> MenuEntryColors {
+        let useDark = useDarkMenuColors()
+        switch useDark {
+        case true:
+            return MenuEntryColors(
+                portColor: .systemCyan,
+                arrowColor: .secondaryLabelColor,
+                processColor: .systemGreen,
+                detailColor: .tertiaryLabelColor
+            )
+        case false:
+            return MenuEntryColors(
+                portColor: NSColor(calibratedRed: 0.0, green: 0.48, blue: 0.78, alpha: 1.0),
+                arrowColor: .labelColor,
+                processColor: NSColor(calibratedRed: 0.0, green: 0.55, blue: 0.18, alpha: 1.0),
+                detailColor: .secondaryLabelColor
+            )
+        }
+    }
+
+    private func serverEntryColors() -> MenuEntryColors {
+        let useDark = useDarkMenuColors()
+        switch useDark {
+        case true:
+            return MenuEntryColors(
+                portColor: .systemCyan,
+                arrowColor: .secondaryLabelColor,
+                processColor: .systemOrange,
+                detailColor: .tertiaryLabelColor
+            )
+        case false:
+            return MenuEntryColors(
+                portColor: NSColor(calibratedRed: 0.0, green: 0.48, blue: 0.78, alpha: 1.0),
+                arrowColor: .labelColor,
+                processColor: NSColor(calibratedRed: 0.78, green: 0.36, blue: 0.0, alpha: 1.0),
+                detailColor: .secondaryLabelColor
+            )
+        }
+    }
+
     private func formatPortEntry(_ port: PortInfo) -> NSAttributedString {
         let result = NSMutableAttributedString()
 
-        let portColor = NSColor.systemCyan
-        let arrowColor = NSColor.secondaryLabelColor
-        let processColor = NSColor.systemGreen
-        let pidColor = NSColor.tertiaryLabelColor
+        let colors = portEntryColors()
+        let portColor = colors.portColor
+        let arrowColor = colors.arrowColor
+        let processColor = colors.processColor
+        let pidColor = colors.detailColor
 
         let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         let regular = NSFont.menuFont(ofSize: 13)
@@ -172,10 +236,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private func formatServerEntry(_ server: HTTPServer) -> NSAttributedString {
         let result = NSMutableAttributedString()
 
-        let portColor = NSColor.systemCyan
-        let arrowColor = NSColor.secondaryLabelColor
-        let processColor = NSColor.systemOrange
-        let pathColor = NSColor.tertiaryLabelColor
+        let colors = serverEntryColors()
+        let portColor = colors.portColor
+        let arrowColor = colors.arrowColor
+        let processColor = colors.processColor
+        let pathColor = colors.detailColor
 
         let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         let regular = NSFont.menuFont(ofSize: 13)
