@@ -18,7 +18,7 @@ struct PreferencesView: View {
             Section {
                 HStack {
                     Text("Default Port:")
-                    TextField("8080", text: $portText)
+                    TextField("", text: $portText, prompt: Text("8080"))
                         .frame(width: 80)
                         .multilineTextAlignment(.center)
                         .onAppear {
