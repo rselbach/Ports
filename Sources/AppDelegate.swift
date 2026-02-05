@@ -1,4 +1,5 @@
 import AppKit
+import os
 import Sparkle
 import SwiftUI
 
@@ -20,6 +21,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private var portObserver: NSObjectProtocol?
     private var updaterController: SPUStandardUpdaterController?
     private var preferencesWindow: NSWindow?
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
+        category: "AppDelegate"
+    )
     
     private let savedServersKey = "savedServers"
 
@@ -346,6 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
 
     private func showServeDialog() {
         selectedDirectory = nil
+        defer { NSApp.setActivationPolicy(.accessory) }
 
         let alert = NSAlert()
         alert.messageText = "Serve Directory"
@@ -430,18 +436,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             port = p
         } else {
             showError("Invalid port number. Must be 1024-65535.")
-            NSApp.setActivationPolicy(.accessory)
             return
         }
 
         if isPortInUse(port) {
             showError("Port \(port) is already in use.")
-            NSApp.setActivationPolicy(.accessory)
             return
         }
 
         startServer(port: port, directory: directory)
-        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc private func chooseFolderAction() {
@@ -486,15 +489,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     private func findAvailablePort() -> UInt16 {
-        let startPort = AppSettings.shared.defaultPort
-        for port in startPort...min(startPort + 100, 65535) {
-            if !isPortInUse(port) {
-                return port
+        let startPort = Int(AppSettings.shared.defaultPort)
+        let endPort = min(startPort + 100, Int(UInt16.max))
+        for port in startPort...endPort {
+            guard let candidate = UInt16(exactly: port) else { continue }
+            if !isPortInUse(candidate) {
+                return candidate
             }
         }
         return UInt16.random(in: 8200...9000)
     }
-
     private func startServer(port: UInt16, directory: URL) {
         let server = HTTPServer(port: port, directory: directory)
         do {
@@ -512,14 +516,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             return
         }
         let saved = snapshotServers().map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
-        if let data = try? JSONEncoder().encode(saved) {
+        do {
+            let data = try JSONEncoder().encode(saved)
             UserDefaults.standard.set(data, forKey: savedServersKey)
+        } catch {
+            logger.error("Failed to encode persisted servers: \(error.localizedDescription, privacy: .public)")
         }
     }
     
     private func restoreServers() {
-        guard let data = UserDefaults.standard.data(forKey: savedServersKey),
-              let saved = try? JSONDecoder().decode([SavedServer].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: savedServersKey) else {
+            return
+        }
+
+        let saved: [SavedServer]
+        do {
+            saved = try JSONDecoder().decode([SavedServer].self, from: data)
+        } catch {
+            logger.error("Failed to decode persisted servers: \(error.localizedDescription, privacy: .public)")
             return
         }
         
@@ -542,7 +556,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
                 try server.start()
                 addServer(server)
             } catch {
-                print("Failed to restore server on port \(port): \(error)")
+                logger.error("Failed to restore server on port \(port): \(error.localizedDescription, privacy: .public)")
             }
         }
 

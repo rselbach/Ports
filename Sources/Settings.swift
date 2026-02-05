@@ -1,8 +1,13 @@
 import Foundation
+import os
 import ServiceManagement
 
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
+        category: "Settings"
+    )
     
     private enum Keys {
         static let defaultPort = "defaultPort"
@@ -30,9 +35,15 @@ final class AppSettings: ObservableObject {
         }
     }
     
+    @Published var loginItemErrorMessage: String?
+    
     private init() {
         let storedPort = UserDefaults.standard.integer(forKey: Keys.defaultPort)
-        self.defaultPort = storedPort > 0 ? UInt16(storedPort) : 8080
+        if storedPort > 0, let safePort = UInt16(exactly: storedPort) {
+            self.defaultPort = safePort
+        } else {
+            self.defaultPort = 8080
+        }
         
         if UserDefaults.standard.object(forKey: Keys.persistServers) == nil {
             self.persistServers = true
@@ -57,8 +68,10 @@ final class AppSettings: ObservableObject {
                 } else {
                     try SMAppService.mainApp.unregister()
                 }
+                loginItemErrorMessage = nil
             } catch {
-                print("Failed to update login item: \(error)")
+                logger.error("Failed to update login item: \(error.localizedDescription, privacy: .public)")
+                loginItemErrorMessage = "Failed to update login item: \(error.localizedDescription)"
             }
         }
     }

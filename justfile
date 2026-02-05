@@ -15,12 +15,23 @@ bundle: release
     
     APP_BUNDLE=".build/release-bundle/Ports.app"
     CONTENTS="${APP_BUNDLE}/Contents"
+    SPARKLE_FRAMEWORK=".build/arm64-apple-macosx/release/Sparkle.framework"
     
     rm -rf "${APP_BUNDLE}"
-    mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
+    mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources" "${CONTENTS}/Frameworks"
     
     cp .build/release/Ports "${CONTENTS}/MacOS/Ports"
     cp Sources/Info.plist "${CONTENTS}/Info.plist"
+    
+    if [[ ! -d "${SPARKLE_FRAMEWORK}" ]]; then
+        echo "Sparkle.framework not found at ${SPARKLE_FRAMEWORK}" >&2
+        exit 1
+    fi
+    cp -R "${SPARKLE_FRAMEWORK}" "${CONTENTS}/Frameworks/"
+    
+    if ! otool -l "${CONTENTS}/MacOS/Ports" | grep -q "@executable_path/../Frameworks"; then
+        install_name_tool -add_rpath @executable_path/../Frameworks "${CONTENTS}/MacOS/Ports"
+    fi
     
     xcrun actool Sources/Assets.xcassets \
         --compile "${CONTENTS}/Resources" \
@@ -33,11 +44,16 @@ bundle: release
 
 # Sign app bundle (requires bundle)
 sign: bundle
+    codesign --force --options runtime --deep \
+        --sign "Developer ID Application" \
+        .build/release-bundle/Ports.app/Contents/Frameworks/Sparkle.framework
     codesign --force --options runtime \
         --sign "Developer ID Application" \
+        --entitlements Sources/Entitlements.plist \
         .build/release-bundle/Ports.app/Contents/MacOS/Ports
     codesign --force --options runtime \
         --sign "Developer ID Application" \
+        --entitlements Sources/Entitlements.plist \
         .build/release-bundle/Ports.app
     codesign --verify --deep --strict --verbose=2 .build/release-bundle/Ports.app
 

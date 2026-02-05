@@ -3,6 +3,8 @@ import SwiftUI
 struct PreferencesView: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var portText: String = ""
+    @State private var showLoginItemError = false
+    @State private var loginItemErrorMessage = ""
     
     var body: some View {
         Form {
@@ -47,6 +49,16 @@ struct PreferencesView: View {
         .frame(width: 500, height: 350)
         .onAppear {
             settings.syncLoginItemState()
+        }
+        .onReceive(settings.$loginItemErrorMessage) { message in
+            guard let message else { return }
+            loginItemErrorMessage = message
+            showLoginItemError = true
+        }
+        .alert("Launch at login error", isPresented: $showLoginItemError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(loginItemErrorMessage)
         }
     }
 }

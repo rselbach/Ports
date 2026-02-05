@@ -1,5 +1,28 @@
 import Foundation
 import Network
+import os
+
+enum HTTPUtilities {
+    static func htmlEscaped(_ text: String) -> String {
+        var escaped = text
+        escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
+        escaped = escaped.replacingOccurrences(of: "\"", with: "&quot;")
+        escaped = escaped.replacingOccurrences(of: "'", with: "&#39;")
+        escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
+        escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
+        return escaped
+    }
+
+    static func percentEncodedPath(_ path: String) -> String {
+        var components = URLComponents()
+        components.path = path
+        let encodedPath = components.percentEncodedPath
+        if encodedPath.isEmpty {
+            return "/"
+        }
+        return encodedPath
+    }
+}
 
 protocol HTTPServerDelegate: AnyObject {
     func server(_ server: HTTPServer, didFailWithError error: Error)
@@ -11,7 +34,13 @@ class HTTPServer {
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private let maxConnections = 50
+    private let maxRequestHeaderBytes = 64 * 1024
     private let connectionsLock = NSLock()
+    private let serverQueue = DispatchQueue(label: "com.rselbach.ports.httpserver", qos: .userInitiated, attributes: .concurrent)
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
+        category: "HTTPServer"
+    )
     weak var delegate: HTTPServerDelegate?
     
     var isRunning: Bool { listener != nil }
@@ -48,7 +77,7 @@ class HTTPServer {
             }
         }
         
-        listener?.start(queue: .main)
+        listener?.start(queue: serverQueue)
     }
     
     func stop() {
@@ -79,22 +108,49 @@ class HTTPServer {
             }
         }
         
-        connection.start(queue: .main)
+        connection.start(queue: serverQueue)
         receiveRequest(connection)
     }
     
-    private func receiveRequest(_ connection: NWConnection) {
+    private func receiveRequest(_ connection: NWConnection, buffer: Data = Data()) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self, let data = data, !data.isEmpty else {
+            guard let self = self else {
                 connection.cancel()
                 return
             }
-            
-            if let request = String(data: data, encoding: .utf8) {
-                self.handleRequest(request, connection: connection)
-            } else {
+
+            if let error {
+                self.logger.error("Receive failed on port \(self.port): \(error.localizedDescription, privacy: .public)")
                 connection.cancel()
+                return
             }
+
+            var accumulated = buffer
+            if let data, !data.isEmpty {
+                accumulated.append(data)
+            }
+
+            if accumulated.count > self.maxRequestHeaderBytes {
+                self.sendError(connection, status: 413, message: "Request Entity Too Large")
+                return
+            }
+
+            if let headerEndRange = accumulated.range(of: Data("\r\n\r\n".utf8)) {
+                let headerData = accumulated.subdata(in: accumulated.startIndex..<headerEndRange.upperBound)
+                guard let request = String(data: headerData, encoding: .utf8) else {
+                    self.sendError(connection, status: 400, message: "Bad Request")
+                    return
+                }
+                self.handleRequest(request, connection: connection)
+                return
+            }
+
+            if isComplete {
+                self.sendError(connection, status: 400, message: "Bad Request")
+                return
+            }
+
+            self.receiveRequest(connection, buffer: accumulated)
         }
     }
     
@@ -135,7 +191,8 @@ class HTTPServer {
         if FileManager.default.fileExists(atPath: filePath.path, isDirectory: &isDirectory) {
             if isDirectory.boolValue {
                 if !requestPath.hasSuffix("/") {
-                    sendRedirect(to: requestPath + "/", connection: connection)
+                    let redirectPath = HTTPUtilities.percentEncodedPath(requestPath + "/")
+                    sendRedirect(to: redirectPath, connection: connection)
                     return
                 }
                 if let indexFile = findIndexFile(in: filePath) {
@@ -154,7 +211,11 @@ class HTTPServer {
     }
     
     private func serveFile(_ url: URL, connection: NWConnection) {
-        guard let data = try? Data(contentsOf: url) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            logger.error("Failed to read file \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             sendError(connection, status: 500, message: "Internal Server Error")
             return
         }
@@ -176,12 +237,13 @@ class HTTPServer {
     }
     
     private func serveDirectoryListing(_ dir: URL, requestPath: String, connection: NWConnection) {
+        let safeRequestPath = HTTPUtilities.htmlEscaped(requestPath)
         var html = """
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Index of \(requestPath)</title>
+            <title>Index of \(safeRequestPath)</title>
             <style>
                 body { font-family: -apple-system, sans-serif; padding: 20px; }
                 a { text-decoration: none; color: #007aff; }
@@ -190,23 +252,35 @@ class HTTPServer {
             </style>
         </head>
         <body>
-            <h1>Index of \(requestPath)</h1>
+            <h1>Index of \(safeRequestPath)</h1>
             <ul>
         """
         
         if requestPath != "/" {
             let parent = (requestPath as NSString).deletingLastPathComponent
-            html += "<li><a href=\"\(parent.isEmpty ? "/" : parent)\">../</a></li>\n"
+            let parentPath = parent.isEmpty ? "/" : parent
+            let parentHref = HTTPUtilities.htmlEscaped(HTTPUtilities.percentEncodedPath(parentPath))
+            html += "<li><a href=\"\(parentHref)\">../</a></li>\n"
         }
         
-        if let contents = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) {
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey])
             for item in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 let name = item.lastPathComponent
-                let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                let values = try item.resourceValues(forKeys: [.isDirectoryKey])
+                let isDir = values.isDirectory ?? false
                 let displayName = isDir ? "\(name)/" : name
-                let linkPath = requestPath.hasSuffix("/") ? "\(requestPath)\(name)" : "\(requestPath)/\(name)"
-                html += "<li><a href=\"\(linkPath)\">\(displayName)</a></li>\n"
+                let linkPath = requestPath.hasSuffix("/")
+                    ? "\(requestPath)\(name)"
+                    : "\(requestPath)/\(name)"
+                let linkHref = HTTPUtilities.htmlEscaped(HTTPUtilities.percentEncodedPath(linkPath))
+                let safeDisplayName = HTTPUtilities.htmlEscaped(displayName)
+                html += "<li><a href=\"\(linkHref)\">\(safeDisplayName)</a></li>\n"
             }
+        } catch {
+            logger.error("Failed to read directory \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            sendError(connection, status: 500, message: "Internal Server Error")
+            return
         }
         
         html += """
