@@ -42,8 +42,10 @@ class HTTPServer {
     let directory: URL
     private var listener: NWListener?
     private var connections: [NWConnection] = []
+    private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     private let maxConnections = 50
     private let maxRequestHeaderBytes = 64 * 1024
+    private let requestTimeout: TimeInterval = 30
     private let connectionsLock = NSLock()
     private let serverQueue = DispatchQueue(label: "com.rselbach.ports.httpserver", qos: .userInitiated, attributes: .concurrent)
     private let logger = Logger(
@@ -93,6 +95,8 @@ class HTTPServer {
         connectionsLock.lock()
         connections.forEach { $0.cancel() }
         connections.removeAll()
+        connectionTimeouts.values.forEach { $0.cancel() }
+        connectionTimeouts.removeAll()
         connectionsLock.unlock()
         listener?.cancel()
         listener = nil
@@ -109,19 +113,42 @@ class HTTPServer {
         connections.append(connection)
         connectionsLock.unlock()
 
+        let connectionId = ObjectIdentifier(connection)
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.logger.debug("Connection timeout on port \(self.port)")
+            self.cancelConnectionTimeout(connectionId)
+            connection.cancel()
+        }
+        connectionsLock.lock()
+        connectionTimeouts[connectionId] = timeoutWorkItem
+        connectionsLock.unlock()
+        serverQueue.asyncAfter(deadline: .now() + requestTimeout, execute: timeoutWorkItem)
+
         connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             if case .cancelled = state {
-                self?.connectionsLock.lock()
-                self?.connections.removeAll { $0 === connection }
-                self?.connectionsLock.unlock()
+                self.cancelConnectionTimeout(connectionId)
+                self.connectionsLock.lock()
+                self.connections.removeAll { $0 === connection }
+                self.connectionsLock.unlock()
             }
         }
-        
+
         connection.start(queue: serverQueue)
         receiveRequest(connection)
     }
+
+    private func cancelConnectionTimeout(_ connectionId: ObjectIdentifier) {
+        connectionsLock.lock()
+        if let workItem = connectionTimeouts.removeValue(forKey: connectionId) {
+            workItem.cancel()
+        }
+        connectionsLock.unlock()
+    }
     
     private func receiveRequest(_ connection: NWConnection, buffer: Data = Data()) {
+        let connectionId = ObjectIdentifier(connection)
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else {
                 connection.cancel()
@@ -130,6 +157,7 @@ class HTTPServer {
 
             if let error {
                 self.logger.error("Receive failed on port \(self.port): \(error.localizedDescription, privacy: .public)")
+                self.cancelConnectionTimeout(connectionId)
                 connection.cancel()
                 return
             }
@@ -140,6 +168,7 @@ class HTTPServer {
             }
 
             if accumulated.count > self.maxRequestHeaderBytes {
+                self.cancelConnectionTimeout(connectionId)
                 self.sendError(connection, status: 413, message: "Request Entity Too Large")
                 return
             }
@@ -147,14 +176,17 @@ class HTTPServer {
             if let headerEndRange = accumulated.range(of: Data("\r\n\r\n".utf8)) {
                 let headerData = accumulated.subdata(in: accumulated.startIndex..<headerEndRange.upperBound)
                 guard let request = String(data: headerData, encoding: .utf8) else {
+                    self.cancelConnectionTimeout(connectionId)
                     self.sendError(connection, status: 400, message: "Bad Request")
                     return
                 }
+                self.cancelConnectionTimeout(connectionId)
                 self.handleRequest(request, connection: connection)
                 return
             }
 
             if isComplete {
+                self.cancelConnectionTimeout(connectionId)
                 self.sendError(connection, status: 400, message: "Bad Request")
                 return
             }
