@@ -127,6 +127,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         serveItem.target = self
         menu.addItem(serveItem)
 
+        // Add "Stop All Servers" if there are active servers
+        let servers = snapshotServers()
+        if !servers.isEmpty {
+            let stopAllItem = NSMenuItem(title: "Stop All Servers (\(servers.count))", action: #selector(stopAllServers), keyEquivalent: "")
+            stopAllItem.target = self
+            menu.addItem(stopAllItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(openPreferences), keyEquivalent: ",")
@@ -278,12 +286,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         if let port = sender.representedObject as? UInt16 {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(String(port), forType: .string)
+            showCopyConfirmation()
         }
     }
 
     @objc private func quit() {
-        snapshotServers().forEach { $0.stop() }
-        NSApplication.shared.terminate(nil)
+        let servers = snapshotServers()
+        if !servers.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Quit Ports?"
+            alert.informativeText = "\(servers.count) server(s) are still running. They will be stopped when you quit."
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                servers.forEach { $0.stop() }
+                NSApplication.shared.terminate(nil)
+            }
+        } else {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    @objc private func stopAllServers() {
+        let servers = snapshotServers()
+        servers.forEach { $0.stop() }
+        servers.forEach { removeServer($0) }
+        saveServers()
+        rebuildMenuItems()
     }
     
     @objc private func openPreferences() {
@@ -588,6 +619,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         guard let server = sender.representedObject as? HTTPServer else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("http://localhost:\(server.port)", forType: .string)
+        showCopyConfirmation()
     }
 
     @objc private func stopServer(_ sender: NSMenuItem) {
@@ -622,6 +654,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    private func showCopyConfirmation() {
+        guard let button = statusItem.button else { return }
+        let originalImage = button.image
+        button.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            self?.statusItem.button?.image = originalImage
+        }
     }
 
     // MARK: - HTTPServerDelegate
