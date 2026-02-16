@@ -15,9 +15,39 @@ class PortScanner {
         category: "PortScanner"
     )
 
+    private var cachedResults: [PortInfo] = []
+    private var cacheTimestamp: Date?
+    private let cacheTTL: TimeInterval = 2.0
+    private let cacheLock = NSLock()
+
+    /// Returns cached port scan results if still valid, otherwise performs a fresh scan.
+    /// Cache is valid for 2 seconds by default.
     func scan() -> [PortInfo] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        if let timestamp = cacheTimestamp {
+            let elapsed = Date().timeIntervalSince(timestamp)
+            if elapsed < cacheTTL {
+                return cachedResults
+            }
+        }
+
         let lsofOutput = runLsof()
-        return parseLsofOutput(lsofOutput)
+        cachedResults = parseLsofOutput(lsofOutput)
+        cacheTimestamp = Date()
+        return cachedResults
+    }
+
+    /// Forces a fresh scan, bypassing the cache.
+    func forceScan() -> [PortInfo] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        let lsofOutput = runLsof()
+        cachedResults = parseLsofOutput(lsofOutput)
+        cacheTimestamp = Date()
+        return cachedResults
     }
 
     private func runLsof() -> String {

@@ -66,10 +66,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     
     func menuWillOpen(_ menu: NSMenu) {
-        // Scan ports on background queue to avoid blocking UI
+        // Force fresh scan on background queue when user opens menu
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let ports = self.portScanner.scan()
+            let ports = self.portScanner.forceScan()
             DispatchQueue.main.async {
                 self.pendingScanResult = ports
                 self.rebuildMenuItems()
@@ -83,7 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         let menu = statusMenu!
         menu.removeAllItems()
 
-        // Use cached result if available, otherwise scan on background queue
+        // Use pending result from background scan, or cached result if available
         let scannedPorts = pendingScanResult.isEmpty ? portScanner.scan() : pendingScanResult
         pendingScanResult = []
         let serversSnapshot = snapshotServers()
