@@ -8,7 +8,7 @@ struct SavedServer: Codable {
     let directoryPath: String
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, HTTPServerDelegate {
     private var statusItem: NSStatusItem!
     private var portScanner = PortScanner()
     private var statusMenu: NSMenu!
@@ -501,6 +501,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
     private func startServer(port: UInt16, directory: URL) {
         let server = HTTPServer(port: port, directory: directory)
+        server.delegate = self
         do {
             try server.start()
             addServer(server)
@@ -552,6 +553,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             reservedPorts.insert(port)
 
             let server = HTTPServer(port: port, directory: directory)
+            server.delegate = self
             do {
                 try server.start()
                 addServer(server)
@@ -622,4 +624,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         alert.runModal()
     }
 
+    // MARK: - HTTPServerDelegate
+
+    func server(_ server: HTTPServer, didFailWithError error: Error) {
+        logger.error("Server on port \(server.port) failed: \(error.localizedDescription, privacy: .public)")
+        removeServer(server)
+        saveServers()
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildMenuItems()
+        }
+    }
 }
