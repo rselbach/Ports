@@ -22,6 +22,15 @@ enum HTTPUtilities {
         }
         return encodedPath
     }
+
+    /// Sanitizes a header value to prevent CRLF injection.
+    /// Removes any carriage returns, line feeds, and null bytes.
+    static func sanitizedHeaderValue(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\0", with: "")
+    }
 }
 
 protocol HTTPServerDelegate: AnyObject {
@@ -219,20 +228,21 @@ class HTTPServer {
             sendError(connection, status: 500, message: "Internal Server Error")
             return
         }
-        
+
         let mimeType = mimeType(for: url.pathExtension)
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: \(mimeType)\r
         Content-Length: \(data.count)\r
         Connection: close\r
+        X-Content-Type-Options: nosniff\r
         \r
-        
+
         """
-        
+
         var responseData = Data(response.utf8)
         responseData.append(data)
-        
+
         sendResponse(responseData, connection: connection)
     }
     
@@ -288,35 +298,40 @@ class HTTPServer {
         </body>
         </html>
         """
-        
+
         let data = Data(html.utf8)
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: text/html; charset=utf-8\r
         Content-Length: \(data.count)\r
         Connection: close\r
+        X-Content-Type-Options: nosniff\r
+        X-Frame-Options: DENY\r
         \r
-        
+
         """
-        
+
         var responseData = Data(response.utf8)
         responseData.append(data)
-        
+
         sendResponse(responseData, connection: connection)
     }
     
     private func sendError(_ connection: NWConnection, status: Int, message: String) {
-        let body = "<html><body><h1>\(status) \(message)</h1></body></html>"
+        let safeMessage = HTTPUtilities.htmlEscaped(message)
+        let body = "<html><body><h1>\(status) \(safeMessage)</h1></body></html>"
         let bodyData = Data(body.utf8)
         let response = """
-        HTTP/1.1 \(status) \(message)\r
-        Content-Type: text/html\r
+        HTTP/1.1 \(status) \(safeMessage)\r
+        Content-Type: text/html; charset=utf-8\r
         Content-Length: \(bodyData.count)\r
         Connection: close\r
+        X-Content-Type-Options: nosniff\r
+        X-Frame-Options: DENY\r
         \r
         \(body)
         """
-        
+
         sendResponse(Data(response.utf8), connection: connection)
     }
     
@@ -327,13 +342,14 @@ class HTTPServer {
     }
     
     private func sendRedirect(to location: String, connection: NWConnection) {
+        let safeLocation = HTTPUtilities.sanitizedHeaderValue(location)
         let response = """
         HTTP/1.1 301 Moved Permanently\r
-        Location: \(location)\r
+        Location: \(safeLocation)\r
         Content-Length: 0\r
         Connection: close\r
         \r
-        
+
         """
         sendResponse(Data(response.utf8), connection: connection)
     }

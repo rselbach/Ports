@@ -15,4 +15,25 @@ final class HTTPUtilitiesTests: XCTestCase {
         let want = "/Greendale%20Community%20College/Senor%20Chang's%20notes.html"
         XCTAssertEqual(got, want)
     }
+
+    func testSanitizedHeaderValueRemovesCRLF() {
+        let inputs = [
+            "/path\r\nSet-Cookie: hijacked": "/pathSet-Cookie: hijacked",
+            "/path\nLocation: evil.com": "/pathLocation: evil.com",
+            "/path\rX-Injected: true": "/pathX-Injected: true",
+            "/path\r\n\r\n<html>evil</html>": "/path<html>evil</html>",
+            "/normal/path": "/normal/path",
+            "": "",
+        ]
+        for (input, want) in inputs {
+            let got = HTTPUtilities.sanitizedHeaderValue(input)
+            XCTAssertEqual(got, want, "Failed for input: \(input.debugDescription)")
+        }
+    }
+
+    func testSanitizedHeaderValueRemovesNullBytes() {
+        let input = "/path\u{0}malicious"
+        let got = HTTPUtilities.sanitizedHeaderValue(input)
+        XCTAssertEqual(got, "/pathmalicious")
+    }
 }
