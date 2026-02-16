@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 
 struct PortInfo: Hashable {
     let port: UInt16
@@ -9,6 +10,11 @@ struct PortInfo: Hashable {
 }
 
 class PortScanner {
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
+        category: "PortScanner"
+    )
+
     func scan() -> [PortInfo] {
         let lsofOutput = runLsof()
         return parseLsofOutput(lsofOutput)
@@ -17,16 +23,26 @@ class PortScanner {
     private func runLsof() -> String {
         let process = Process()
         let pipe = Pipe()
+        let errorPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         process.arguments = ["-iTCP", "-sTCP:LISTEN", "-n", "-P", "-Fpcn", "-c0"]
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errorPipe
 
         do {
             try process.run()
             process.waitUntilExit()
         } catch {
+            logger.error("Failed to run lsof: \(error.localizedDescription, privacy: .public)")
+            return ""
+        }
+
+        let terminationStatus = process.terminationStatus
+        guard terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "unknown error"
+            logger.error("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
             return ""
         }
 
