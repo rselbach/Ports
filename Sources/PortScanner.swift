@@ -68,16 +68,23 @@ class PortScanner {
             return ""
         }
 
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
         let terminationStatus = process.terminationStatus
-        guard terminationStatus == 0 else {
+        if terminationStatus != 0 && output.isEmpty {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "unknown error"
             logger.error("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
             return ""
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        if terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "unknown error"
+            logger.notice("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
+        }
+
+        return output
     }
 
     private func parseLsofOutput(_ output: String) -> [PortInfo] {
