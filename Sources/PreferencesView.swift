@@ -41,6 +41,7 @@ struct PreferencesView: View {
                         .font(.caption)
                 }
                 Toggle("Persist directory servers between restarts", isOn: $settings.persistServers)
+                Toggle("Share new servers on local network by default", isOn: $settings.shareOnLANByDefault)
             } header: {
                 Text("Server")
             }

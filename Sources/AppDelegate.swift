@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import os
 import Sparkle
 import SwiftUI
@@ -6,6 +7,26 @@ import SwiftUI
 struct SavedServer: Codable {
     let port: UInt16
     let directoryPath: String
+    let exposeToLAN: Bool
+
+    init(port: UInt16, directoryPath: String, exposeToLAN: Bool) {
+        self.port = port
+        self.directoryPath = directoryPath
+        self.exposeToLAN = exposeToLAN
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case port
+        case directoryPath
+        case exposeToLAN
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        port = try container.decode(UInt16.self, forKey: .port)
+        directoryPath = try container.decode(String.self, forKey: .directoryPath)
+        exposeToLAN = try container.decodeIfPresent(Bool.self, forKey: .exposeToLAN) ?? false
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, HTTPServerDelegate {
@@ -274,7 +295,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             .font: regular
         ]))
 
-        result.append(NSAttributedString(string: " (server)", attributes: [
+        let modeSymbol = accessModeSymbol(for: server)
+        result.append(NSAttributedString(string: " (\(modeSymbol))", attributes: [
             .foregroundColor: pathColor,
             .font: regular
         ]))
@@ -351,15 +373,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private func createServerSubmenu(for server: HTTPServer) -> NSMenu {
         let submenu = NSMenu()
 
-        let urlItem = NSMenuItem(title: "http://localhost:\(server.port)", action: #selector(openServerURL(_:)), keyEquivalent: "")
-        urlItem.target = self
-        urlItem.representedObject = server
-        submenu.addItem(urlItem)
+        let modeItem = NSMenuItem(title: accessModeTitle(for: server), action: nil, keyEquivalent: "")
+        modeItem.isEnabled = false
+        submenu.addItem(modeItem)
+        submenu.addItem(NSMenuItem.separator())
 
-        let copyItem = NSMenuItem(title: "Copy URL", action: #selector(copyServerURL(_:)), keyEquivalent: "")
-        copyItem.target = self
-        copyItem.representedObject = server
-        submenu.addItem(copyItem)
+        let localURL = localURLString(for: server)
+        let lanURL = lanURLString(for: server)
+        let localItem = NSMenuItem(title: localURL, action: #selector(openURLString(_:)), keyEquivalent: "")
+        localItem.target = self
+        localItem.representedObject = localURL
+        submenu.addItem(localItem)
+
+        if let lanURL {
+            let lanItem = NSMenuItem(title: lanURL, action: #selector(openURLString(_:)), keyEquivalent: "")
+            lanItem.target = self
+            lanItem.representedObject = lanURL
+            submenu.addItem(lanItem)
+        } else if server.exposeToLAN {
+            let unavailable = NSMenuItem(title: "LAN URL unavailable", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            submenu.addItem(unavailable)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let copyLocalItem = NSMenuItem(title: "Copy Local URL", action: #selector(copyURLString(_:)), keyEquivalent: "")
+        copyLocalItem.target = self
+        copyLocalItem.representedObject = localURL
+        submenu.addItem(copyLocalItem)
+
+        if let lanURL {
+            let copyLANItem = NSMenuItem(title: "Copy LAN URL", action: #selector(copyURLString(_:)), keyEquivalent: "")
+            copyLANItem.target = self
+            copyLANItem.representedObject = lanURL
+            submenu.addItem(copyLANItem)
+        }
 
         submenu.addItem(NSMenuItem.separator())
 
@@ -386,31 +435,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
 
         let alert = NSAlert()
         alert.messageText = "Serve Directory"
-        alert.informativeText = "Select a folder and port to start the HTTP server."
+        alert.informativeText = "Select a folder, a port, and whether to allow LAN access."
         alert.addButton(withTitle: "Start Server")
         alert.addButton(withTitle: "Cancel")
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 350, height: 70))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 350, height: 110))
 
         let folderLabel = NSTextField(labelWithString: "Folder:")
-        folderLabel.frame = NSRect(x: 0, y: 44, width: 50, height: 20)
+        folderLabel.frame = NSRect(x: 0, y: 76, width: 50, height: 20)
         container.addSubview(folderLabel)
 
-        let folderPath = NSTextField(frame: NSRect(x: 55, y: 42, width: 210, height: 24))
+        let folderPath = NSTextField(frame: NSRect(x: 55, y: 74, width: 210, height: 24))
         folderPath.placeholderString = "/path/to/folder"
         folderPath.lineBreakMode = .byTruncatingMiddle
         container.addSubview(folderPath)
         folderPathField = folderPath
 
         let chooseButton = NSButton(title: "Choose…", target: self, action: #selector(chooseFolderAction))
-        chooseButton.frame = NSRect(x: 270, y: 40, width: 80, height: 28)
+        chooseButton.frame = NSRect(x: 270, y: 72, width: 80, height: 28)
         container.addSubview(chooseButton)
 
         let portLabel = NSTextField(labelWithString: "Port:")
-        portLabel.frame = NSRect(x: 0, y: 8, width: 50, height: 20)
+        portLabel.frame = NSRect(x: 0, y: 42, width: 50, height: 20)
         container.addSubview(portLabel)
 
-        let portInput = NSTextField(frame: NSRect(x: 55, y: 6, width: 80, height: 24))
+        let portInput = NSTextField(frame: NSRect(x: 55, y: 40, width: 80, height: 24))
         portInput.stringValue = String(findAvailablePort())
         container.addSubview(portInput)
         portField = portInput
@@ -418,10 +467,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         let warningLabel = NSTextField(labelWithString: "")
         warningLabel.font = NSFont.systemFont(ofSize: 11)
         warningLabel.textColor = .systemRed
-        warningLabel.frame = NSRect(x: 140, y: 8, width: 150, height: 18)
+        warningLabel.frame = NSRect(x: 140, y: 42, width: 150, height: 18)
         warningLabel.isHidden = true
         container.addSubview(warningLabel)
         portWarningLabel = warningLabel
+
+        let shareOnLANCheckbox = NSButton(checkboxWithTitle: "Allow access from other devices on this LAN", target: nil, action: nil)
+        shareOnLANCheckbox.state = AppSettings.shared.shareOnLANByDefault ? .on : .off
+        shareOnLANCheckbox.frame = NSRect(x: 0, y: 10, width: 350, height: 20)
+        container.addSubview(shareOnLANCheckbox)
 
         portObserver = NotificationCenter.default.addObserver(
             forName: NSControl.textDidChangeNotification,
@@ -475,7 +529,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             return
         }
 
-        startServer(port: port, directory: directory)
+        let exposeToLAN = shareOnLANCheckbox.state == .on
+        if exposeToLAN && !confirmLANExposure(port: port, directory: directory) {
+            return
+        }
+
+        startServer(port: port, directory: directory, exposeToLAN: exposeToLAN)
     }
 
     @objc private func chooseFolderAction() {
@@ -530,8 +589,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         }
         return UInt16.random(in: 8200...9000)
     }
-    private func startServer(port: UInt16, directory: URL) {
-        let server = HTTPServer(port: port, directory: directory)
+
+    private func confirmLANExposure(port: UInt16, directory: URL) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Share folder on your local network?"
+        alert.informativeText = "Any device on this LAN can access \"\(directory.lastPathComponent)\" at port \(port)."
+        alert.addButton(withTitle: "Start LAN Server")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func startServer(port: UInt16, directory: URL, exposeToLAN: Bool) {
+        let server = HTTPServer(port: port, directory: directory, exposeToLAN: exposeToLAN)
         server.delegate = self
         do {
             try server.start()
@@ -547,7 +617,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             UserDefaults.standard.removeObject(forKey: savedServersKey)
             return
         }
-        let saved = snapshotServers().map { SavedServer(port: $0.port, directoryPath: $0.directory.path) }
+        let saved = snapshotServers().map { SavedServer(port: $0.port, directoryPath: $0.directory.path, exposeToLAN: $0.exposeToLAN) }
         do {
             let data = try JSONEncoder().encode(saved)
             UserDefaults.standard.set(data, forKey: savedServersKey)
@@ -571,6 +641,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         
         let usedPorts = Set(portScanner.scan().map { $0.port })
         var reservedPorts = Set<UInt16>()
+        var restoredLANServers: [HTTPServer] = []
 
         for s in saved {
             let directory = URL(fileURLWithPath: s.directoryPath)
@@ -583,11 +654,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             }
             reservedPorts.insert(port)
 
-            let server = HTTPServer(port: port, directory: directory)
+            let server = HTTPServer(port: port, directory: directory, exposeToLAN: s.exposeToLAN)
             server.delegate = self
             do {
                 try server.start()
                 addServer(server)
+                if s.exposeToLAN {
+                    restoredLANServers.append(server)
+                }
             } catch {
                 logger.error("Failed to restore server on port \(port): \(error.localizedDescription, privacy: .public)")
             }
@@ -595,6 +669,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
 
         if !snapshotServers().isEmpty {
             saveServers()
+        }
+
+        if !restoredLANServers.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.showRestoredLANWarning(for: restoredLANServers)
+            }
         }
     }
     
@@ -607,18 +687,109 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         return UInt16.random(in: 9001...65535)
     }
 
-    @objc private func openServerURL(_ sender: NSMenuItem) {
-        guard let server = sender.representedObject as? HTTPServer,
-              let url = URL(string: "http://localhost:\(server.port)") else {
+    private func localURLString(for server: HTTPServer) -> String {
+        "http://localhost:\(server.port)"
+    }
+
+    private func accessModeSymbol(for server: HTTPServer) -> String {
+        if server.exposeToLAN {
+            return "↔"
+        }
+        return "⌂"
+    }
+
+    private func accessModeTitle(for server: HTTPServer) -> String {
+        if server.exposeToLAN {
+            return "Access: ↔ + ⌂"
+        }
+        return "Access: ⌂"
+    }
+
+    private func lanURLString(for server: HTTPServer) -> String? {
+        guard server.exposeToLAN, let address = localNetworkAddresses().first else {
+            return nil
+        }
+        return "http://\(address):\(server.port)"
+    }
+
+    private func localNetworkAddresses() -> [String] {
+        var ifaddrPointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPointer) == 0, let firstAddress = ifaddrPointer else {
+            return []
+        }
+        defer { freeifaddrs(ifaddrPointer) }
+
+        var addresses = Set<String>()
+        var cursor: UnsafeMutablePointer<ifaddrs>? = firstAddress
+
+        while let current = cursor {
+            let interface = current.pointee
+            cursor = interface.ifa_next
+
+            guard let addr = interface.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            let flags = Int32(interface.ifa_flags)
+            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0 else {
+                continue
+            }
+
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                addr,
+                socklen_t(addr.pointee.sa_len),
+                &hostname,
+                socklen_t(hostname.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+
+            guard result == 0 else {
+                continue
+            }
+
+            let address = String(cString: hostname)
+            if !address.hasPrefix("169.254.") {
+                addresses.insert(address)
+            }
+        }
+
+        return addresses.sorted()
+    }
+
+    private func showRestoredLANWarning(for servers: [HTTPServer]) {
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(.accessory) }
+
+        let alert = NSAlert()
+        alert.messageText = "Restored LAN-accessible servers"
+        alert.informativeText = "\(servers.count) restored server(s) are reachable from your local network."
+        alert.addButton(withTitle: "Stop LAN Servers")
+        alert.addButton(withTitle: "Keep Running")
+        alert.alertStyle = .warning
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            servers.forEach { $0.stop() }
+            servers.forEach { removeServer($0) }
+            saveServers()
+            rebuildMenuItems()
+        }
+    }
+
+    @objc private func openURLString(_ sender: NSMenuItem) {
+        guard let urlString = sender.representedObject as? String,
+              let url = URL(string: urlString) else {
             return
         }
         NSWorkspace.shared.open(url)
     }
 
-    @objc private func copyServerURL(_ sender: NSMenuItem) {
-        guard let server = sender.representedObject as? HTTPServer else { return }
+    @objc private func copyURLString(_ sender: NSMenuItem) {
+        guard let urlString = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("http://localhost:\(server.port)", forType: .string)
+        NSPasteboard.general.setString(urlString, forType: .string)
         showCopyConfirmation()
     }
 

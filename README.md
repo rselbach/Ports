@@ -6,6 +6,7 @@ A macOS menubar app that shows listening TCP ports and lets you serve directorie
 
 - View all listening TCP ports in the menubar
 - One-click HTTP server for any directory
+- Local-only HTTP serving by default, with explicit LAN sharing opt-in
 - Runs as a menubar-only app (no dock icon)
 
 ## Building

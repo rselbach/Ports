@@ -8,7 +8,15 @@ final class HTTPServerTests: XCTestCase {
 
         XCTAssertEqual(server.port, 8080)
         XCTAssertEqual(server.directory, tempDir)
+        XCTAssertFalse(server.exposeToLAN)
         XCTAssertFalse(server.isRunning)
+    }
+
+    func testServerCanEnableLANAccess() {
+        let tempDir = FileManager.default.temporaryDirectory
+        let server = HTTPServer(port: 8080, directory: tempDir, exposeToLAN: true)
+
+        XCTAssertTrue(server.exposeToLAN)
     }
 
     func testServerStartsAndStops() throws {

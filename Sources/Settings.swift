@@ -14,6 +14,7 @@ final class AppSettings: ObservableObject {
         static let persistServers = "persistServers"
         static let checkForUpdates = "checkForUpdates"
         static let launchAtLogin = "launchAtLogin"
+        static let shareOnLANByDefault = "shareOnLANByDefault"
     }
     
     @Published var defaultPort: UInt16 {
@@ -33,6 +34,10 @@ final class AppSettings: ObservableObject {
             UserDefaults.standard.set(launchAtLogin, forKey: Keys.launchAtLogin)
             updateLoginItem()
         }
+    }
+
+    @Published var shareOnLANByDefault: Bool {
+        didSet { UserDefaults.standard.set(shareOnLANByDefault, forKey: Keys.shareOnLANByDefault) }
     }
     
     @Published var loginItemErrorMessage: String?
@@ -58,6 +63,12 @@ final class AppSettings: ObservableObject {
         }
         
         self.launchAtLogin = UserDefaults.standard.bool(forKey: Keys.launchAtLogin)
+
+        if UserDefaults.standard.object(forKey: Keys.shareOnLANByDefault) == nil {
+            self.shareOnLANByDefault = false
+        } else {
+            self.shareOnLANByDefault = UserDefaults.standard.bool(forKey: Keys.shareOnLANByDefault)
+        }
     }
     
     private func updateLoginItem() {

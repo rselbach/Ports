@@ -40,6 +40,7 @@ protocol HTTPServerDelegate: AnyObject {
 class HTTPServer {
     let port: UInt16
     let directory: URL
+    let exposeToLAN: Bool
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
@@ -56,9 +57,10 @@ class HTTPServer {
     
     var isRunning: Bool { listener != nil }
     
-    init(port: UInt16, directory: URL) {
+    init(port: UInt16, directory: URL, exposeToLAN: Bool = false) {
         self.port = port
         self.directory = directory
+        self.exposeToLAN = exposeToLAN
     }
     
     func start() throws {
@@ -68,6 +70,7 @@ class HTTPServer {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw NSError(domain: "HTTPServer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid port: \(port)"])
         }
+
         listener = try NWListener(using: params, on: endpointPort)
         
         listener?.newConnectionHandler = { [weak self] connection in
@@ -103,6 +106,13 @@ class HTTPServer {
     }
     
     private func handleConnection(_ connection: NWConnection) {
+        if !exposeToLAN && !isLoopbackConnection(connection) {
+            logger.notice("Rejected non-loopback connection on local-only server port \(self.port)")
+            sendError(connection, status: 403, message: "Forbidden")
+            connection.cancel()
+            return
+        }
+
         connectionsLock.lock()
         guard connections.count < maxConnections else {
             connectionsLock.unlock()
@@ -428,5 +438,22 @@ class HTTPServer {
         let rootPath = root.path
         let filePath = path.path
         return filePath == rootPath || filePath.hasPrefix(rootPath + "/")
+    }
+
+    private func isLoopbackConnection(_ connection: NWConnection) -> Bool {
+        switch connection.endpoint {
+        case .hostPort(let host, _):
+            return isLoopbackHost(host)
+        default:
+            return false
+        }
+    }
+
+    private func isLoopbackHost(_ host: NWEndpoint.Host) -> Bool {
+        let hostValue = String(describing: host).lowercased()
+        if hostValue == "localhost" || hostValue == "::1" {
+            return true
+        }
+        return hostValue.hasPrefix("127.")
     }
 }
