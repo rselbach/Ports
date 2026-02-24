@@ -14,6 +14,8 @@ A macOS menubar app that shows listening TCP ports and lets you serve directorie
 ```bash
 just build    # debug build
 just release  # release build
+just test     # run tests
+just lint     # warnings-as-errors check
 just dmg      # create signed DMG
 ```
 

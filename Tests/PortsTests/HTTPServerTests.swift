@@ -60,4 +60,45 @@ final class HTTPServerTests: XCTestCase {
         // Server should initialize without issues
         XCTAssertNotNil(server)
     }
+
+    func testServerStreamsLargeFile() throws {
+        let fileManager = FileManager.default
+        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let fileURL = tempDir.appendingPathComponent("HumanBeing.bin")
+        let wantData = Data((0..<(512 * 1024)).map { UInt8($0 % 251) })
+        try wantData.write(to: fileURL)
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: tempDir)
+        try server.start()
+
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
+        }
+
+        let url = try XCTUnwrap(URL(string: "http://localhost:\(port)/HumanBeing.bin"))
+        let expectation = expectation(description: "Download streamed file")
+
+        var gotData: Data?
+        var gotResponse: URLResponse?
+        var gotError: Error?
+
+        let task = URLSession.shared.dataTask(with: url) { data, response, error in
+            gotData = data
+            gotResponse = response
+            gotError = error
+            expectation.fulfill()
+        }
+
+        task.resume()
+        waitForExpectations(timeout: 5)
+
+        XCTAssertNil(gotError)
+        let response = try XCTUnwrap(gotResponse as? HTTPURLResponse)
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(gotData, wantData)
+    }
 }

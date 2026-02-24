@@ -47,6 +47,7 @@ class HTTPServer {
     private let maxConnections = 50
     private let maxRequestHeaderBytes = 64 * 1024
     private let requestTimeout: TimeInterval = 30
+    private let fileChunkSizeBytes = 64 * 1024
     private let connectionsLock = NSLock()
     private let serverQueue = DispatchQueue(label: "com.rselbach.ports.httpserver", qos: .userInitiated, attributes: .concurrent)
     private let logger = Logger(
@@ -262,11 +263,28 @@ class HTTPServer {
     }
     
     private func serveFile(_ url: URL, connection: NWConnection) {
-        let data: Data
+        let fileHandle: FileHandle
         do {
-            data = try Data(contentsOf: url)
+            fileHandle = try FileHandle(forReadingFrom: url)
         } catch {
             logger.error("Failed to read file \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            sendError(connection, status: 500, message: "Internal Server Error")
+            return
+        }
+
+        let fileSize: UInt64
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let number = attributes[.size] as? NSNumber else {
+                closeFileHandle(fileHandle, path: url.path)
+                logger.error("Failed to resolve file size for \(url.path, privacy: .public)")
+                sendError(connection, status: 500, message: "Internal Server Error")
+                return
+            }
+            fileSize = number.uint64Value
+        } catch {
+            closeFileHandle(fileHandle, path: url.path)
+            logger.error("Failed to resolve file size for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             sendError(connection, status: 500, message: "Internal Server Error")
             return
         }
@@ -275,17 +293,22 @@ class HTTPServer {
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: \(mimeType)\r
-        Content-Length: \(data.count)\r
+        Content-Length: \(fileSize)\r
         Connection: close\r
         X-Content-Type-Options: nosniff\r
         \r
 
         """
 
-        var responseData = Data(response.utf8)
-        responseData.append(data)
-
-        sendResponse(responseData, connection: connection)
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { [self] error in
+            if let error {
+                logger.error("Failed to send headers for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                closeFileHandle(fileHandle, path: url.path)
+                connection.cancel()
+                return
+            }
+            sendNextFileChunk(fileHandle: fileHandle, path: url.path, connection: connection)
+        })
     }
     
     private func serveDirectoryListing(_ dir: URL, requestPath: String, connection: NWConnection) {
@@ -378,9 +401,48 @@ class HTTPServer {
     }
     
     private func sendResponse(_ data: Data, connection: NWConnection) {
-        connection.send(content: data, completion: .contentProcessed { _ in
+        connection.send(content: data, completion: .contentProcessed { [self] error in
+            if let error {
+                logger.error("Failed to send response on port \(self.port): \(error.localizedDescription, privacy: .public)")
+            }
             connection.cancel()
         })
+    }
+
+    private func sendNextFileChunk(fileHandle: FileHandle, path: String, connection: NWConnection) {
+        let chunk: Data
+        do {
+            chunk = try fileHandle.read(upToCount: fileChunkSizeBytes) ?? Data()
+        } catch {
+            logger.error("Failed to read chunk from \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            closeFileHandle(fileHandle, path: path)
+            connection.cancel()
+            return
+        }
+
+        if chunk.isEmpty {
+            closeFileHandle(fileHandle, path: path)
+            connection.cancel()
+            return
+        }
+
+        connection.send(content: chunk, completion: .contentProcessed { [self] error in
+            if let error {
+                logger.error("Failed to stream chunk for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                closeFileHandle(fileHandle, path: path)
+                connection.cancel()
+                return
+            }
+            sendNextFileChunk(fileHandle: fileHandle, path: path, connection: connection)
+        })
+    }
+
+    private func closeFileHandle(_ fileHandle: FileHandle, path: String) {
+        do {
+            try fileHandle.close()
+        } catch {
+            logger.error("Failed to close file handle for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
     
     private func sendRedirect(to location: String, connection: NWConnection) {

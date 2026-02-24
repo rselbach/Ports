@@ -8,6 +8,17 @@ build:
 release:
     swift build -c release
 
+# Run unit tests
+test:
+    swift test
+
+# Lint by treating compiler warnings as errors
+lint:
+    swift build -Xswiftc -warnings-as-errors
+
+# CI local parity
+ci: lint test
+
 # Create app bundle (requires release build)
 bundle: release
     #!/usr/bin/env bash

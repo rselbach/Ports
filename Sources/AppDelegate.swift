@@ -4,37 +4,11 @@ import os
 import Sparkle
 import SwiftUI
 
-struct SavedServer: Codable {
-    let port: UInt16
-    let directoryPath: String
-    let exposeToLAN: Bool
-
-    init(port: UInt16, directoryPath: String, exposeToLAN: Bool) {
-        self.port = port
-        self.directoryPath = directoryPath
-        self.exposeToLAN = exposeToLAN
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case port
-        case directoryPath
-        case exposeToLAN
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        port = try container.decode(UInt16.self, forKey: .port)
-        directoryPath = try container.decode(String.self, forKey: .directoryPath)
-        exposeToLAN = try container.decodeIfPresent(Bool.self, forKey: .exposeToLAN) ?? false
-    }
-}
-
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, HTTPServerDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private var portScanner = PortScanner()
+    private let portScanner = PortScanner()
+    private lazy var serverManager = ServerManager(portScanner: portScanner)
     private var statusMenu: NSMenu!
-    private var activeServers: [HTTPServer] = []
-    private let activeServersLock = NSLock()
     private var folderPathField: NSTextField?
     private var selectedDirectory: URL?
     private var portField: NSTextField?
@@ -47,8 +21,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         category: "AppDelegate"
     )
     
-    private let savedServersKey = "savedServers"
-
     private struct MenuEntryColors {
         let portColor: NSColor
         let arrowColor: NSColor
@@ -67,9 +39,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
                 userDriverDelegate: nil
             )
         }
+
+        serverManager.onServerFailure = { [weak self] server, error in
+            guard let self else { return }
+            self.logger.error("Server on port \(server.port) failed: \(error.localizedDescription, privacy: .public)")
+            self.rebuildMenuItems()
+        }
+
         setupMenuBar()
         if settings.persistServers {
             restoreServers()
+            rebuildMenuItems()
         }
     }
 
@@ -108,8 +88,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         let scannedPorts = pendingScanResult.isEmpty ? portScanner.scan() : pendingScanResult
         pendingScanResult = []
         let serversSnapshot = snapshotServers()
+        let serversByPort = Dictionary(uniqueKeysWithValues: serversSnapshot.map { ($0.port, $0) })
         let serverPorts = Set(serversSnapshot.map { $0.port })
         let externalPorts = scannedPorts.filter { !serverPorts.contains($0.port) }
+        let externalPortsByPort = Dictionary(uniqueKeysWithValues: externalPorts.map { ($0.port, $0) })
         
         let allPorts: [(port: UInt16, isServer: Bool)] = 
             externalPorts.map { ($0.port, false) } + 
@@ -127,12 +109,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             menu.addItem(NSMenuItem.separator())
 
             for entry in sortedPorts {
-                if entry.isServer, let server = serversSnapshot.first(where: { $0.port == entry.port }) {
+                if entry.isServer, let server = serversByPort[entry.port] {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                     item.attributedTitle = formatServerEntry(server)
                     item.submenu = createServerSubmenu(for: server)
                     menu.addItem(item)
-                } else if let portInfo = externalPorts.first(where: { $0.port == entry.port }) {
+                } else if let portInfo = externalPortsByPort[entry.port] {
                     let item = NSMenuItem(title: "", action: #selector(copyPort(_:)), keyEquivalent: "")
                     item.attributedTitle = formatPortEntry(portInfo)
                     item.target = self
@@ -323,7 +305,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             alert.alertStyle = .warning
 
             if alert.runModal() == .alertFirstButtonReturn {
-                servers.forEach { $0.stop() }
+                serverManager.stopAllServers()
                 NSApplication.shared.terminate(nil)
             }
         } else {
@@ -332,10 +314,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     @objc private func stopAllServers() {
-        let servers = snapshotServers()
-        servers.forEach { $0.stop() }
-        servers.forEach { removeServer($0) }
-        saveServers()
+        serverManager.stopAllServers()
         rebuildMenuItems()
     }
     
@@ -570,24 +549,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     private func isPortInUse(_ port: UInt16) -> Bool {
-        if snapshotServers().contains(where: { $0.port == port }) {
-            return true
-        }
-
-        let ports = portScanner.scan()
-        return ports.contains(where: { $0.port == port })
+        serverManager.isPortInUse(port)
     }
 
     private func findAvailablePort() -> UInt16 {
-        let startPort = Int(AppSettings.shared.defaultPort)
-        let endPort = min(startPort + 100, Int(UInt16.max))
-        for port in startPort...endPort {
-            guard let candidate = UInt16(exactly: port) else { continue }
-            if !isPortInUse(candidate) {
-                return candidate
-            }
-        }
-        return UInt16.random(in: 8200...9000)
+        serverManager.findAvailablePort(defaultPort: AppSettings.shared.defaultPort)
     }
 
     private func confirmLANExposure(port: UInt16, directory: URL) -> Bool {
@@ -601,90 +567,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     }
 
     private func startServer(port: UInt16, directory: URL, exposeToLAN: Bool) {
-        let server = HTTPServer(port: port, directory: directory, exposeToLAN: exposeToLAN)
-        server.delegate = self
         do {
-            try server.start()
-            addServer(server)
-            saveServers()
+            try serverManager.startServer(port: port, directory: directory, exposeToLAN: exposeToLAN)
+            rebuildMenuItems()
         } catch {
             showError("Failed to start server: \(error.localizedDescription)")
         }
     }
     
-    private func saveServers() {
-        guard AppSettings.shared.persistServers else {
-            UserDefaults.standard.removeObject(forKey: savedServersKey)
-            return
-        }
-        let saved = snapshotServers().map { SavedServer(port: $0.port, directoryPath: $0.directory.path, exposeToLAN: $0.exposeToLAN) }
-        do {
-            let data = try JSONEncoder().encode(saved)
-            UserDefaults.standard.set(data, forKey: savedServersKey)
-        } catch {
-            logger.error("Failed to encode persisted servers: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-    
     private func restoreServers() {
-        guard let data = UserDefaults.standard.data(forKey: savedServersKey) else {
-            return
-        }
-
-        let saved: [SavedServer]
-        do {
-            saved = try JSONDecoder().decode([SavedServer].self, from: data)
-        } catch {
-            logger.error("Failed to decode persisted servers: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        
-        let usedPorts = Set(portScanner.scan().map { $0.port })
-        var reservedPorts = Set<UInt16>()
-        var restoredLANServers: [HTTPServer] = []
-
-        for s in saved {
-            let directory = URL(fileURLWithPath: s.directoryPath)
-            guard FileManager.default.fileExists(atPath: directory.path) else { continue }
-
-            var port = s.port
-            let takenPorts = reservedPorts.union(usedPorts).union(Set(snapshotServers().map { $0.port }))
-            if takenPorts.contains(port) {
-                port = findAvailablePortExcluding(takenPorts)
-            }
-            reservedPorts.insert(port)
-
-            let server = HTTPServer(port: port, directory: directory, exposeToLAN: s.exposeToLAN)
-            server.delegate = self
-            do {
-                try server.start()
-                addServer(server)
-                if s.exposeToLAN {
-                    restoredLANServers.append(server)
-                }
-            } catch {
-                logger.error("Failed to restore server on port \(port): \(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        if !snapshotServers().isEmpty {
-            saveServers()
-        }
+        let restoredLANServers = serverManager.restoreServers()
 
         if !restoredLANServers.isEmpty {
             DispatchQueue.main.async { [weak self] in
                 self?.showRestoredLANWarning(for: restoredLANServers)
             }
         }
-    }
-    
-    private func findAvailablePortExcluding(_ excluded: Set<UInt16>) -> UInt16 {
-        for port: UInt16 in 8080...9000 {
-            if !excluded.contains(port) {
-                return port
-            }
-        }
-        return UInt16.random(in: 9001...65535)
     }
 
     private func localURLString(for server: HTTPServer) -> String {
@@ -771,9 +669,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         alert.alertStyle = .warning
 
         if alert.runModal() == .alertFirstButtonReturn {
-            servers.forEach { $0.stop() }
-            servers.forEach { removeServer($0) }
-            saveServers()
+            serverManager.stopServers(servers)
             rebuildMenuItems()
         }
     }
@@ -795,28 +691,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
 
     @objc private func stopServer(_ sender: NSMenuItem) {
         guard let server = sender.representedObject as? HTTPServer else { return }
-        server.stop()
-        removeServer(server)
-        saveServers()
+        serverManager.stopServer(server)
+        rebuildMenuItems()
     }
 
     private func snapshotServers() -> [HTTPServer] {
-        activeServersLock.lock()
-        let snapshot = activeServers
-        activeServersLock.unlock()
-        return snapshot
-    }
-
-    private func addServer(_ server: HTTPServer) {
-        activeServersLock.lock()
-        activeServers.append(server)
-        activeServersLock.unlock()
-    }
-
-    private func removeServer(_ server: HTTPServer) {
-        activeServersLock.lock()
-        activeServers.removeAll { $0 === server }
-        activeServersLock.unlock()
+        serverManager.snapshotServers()
     }
 
     private func showError(_ message: String) {
@@ -836,14 +716,4 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         }
     }
 
-    // MARK: - HTTPServerDelegate
-
-    func server(_ server: HTTPServer, didFailWithError error: Error) {
-        logger.error("Server on port \(server.port) failed: \(error.localizedDescription, privacy: .public)")
-        removeServer(server)
-        saveServers()
-        DispatchQueue.main.async { [weak self] in
-            self?.rebuildMenuItems()
-        }
-    }
 }
