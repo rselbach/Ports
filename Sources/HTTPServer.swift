@@ -307,7 +307,10 @@ class HTTPServer {
         if FileManager.default.fileExists(atPath: filePath.path, isDirectory: &isDirectory) {
             if isDirectory.boolValue {
                 if !requestPath.hasSuffix("/") {
-                    let redirectPath = HTTPUtilities.percentEncodedPath(requestPath + "/")
+                    // Built from relativePath, not requestPath: the latter keeps
+                    // any leading slashes the client sent, and "//name/" is a
+                    // protocol-relative URL that points at another host.
+                    let redirectPath = HTTPUtilities.percentEncodedPath("/" + relativePath + "/")
                     sendRedirect(to: redirectPath, connection: connection)
                     return
                 }

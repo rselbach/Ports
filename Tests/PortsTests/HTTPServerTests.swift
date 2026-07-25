@@ -154,6 +154,69 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertEqual(try fetch(port: port, path: "/escape.txt").status, 403)
     }
 
+    func testDirectoryRedirectStaysOnThisServer() throws {
+        let fileManager = FileManager.default
+        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        // A directory whose name would be read as a host in a "//" redirect.
+        try fileManager.createDirectory(at: tempDir.appendingPathComponent("greendale.edu"), withIntermediateDirectories: true)
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: tempDir)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
+        }
+
+        for requested in ["/greendale.edu", "//greendale.edu", "///greendale.edu"] {
+            let location = try XCTUnwrap(redirectLocation(port: port, rawPath: requested), "no redirect for \(requested)")
+            XCTAssertEqual(location, "/greendale.edu/", "\(requested) redirected off this server")
+
+            let base = try XCTUnwrap(URL(string: "http://localhost:\(port)/"))
+            let resolved = try XCTUnwrap(URL(string: location, relativeTo: base)?.absoluteURL)
+            XCTAssertEqual(resolved.host, "localhost", "\(requested) resolved to another host")
+        }
+    }
+
+    /// Sends a raw request and returns the Location header of a 3xx response.
+    private func redirectLocation(port: UInt16, rawPath: String) throws -> String? {
+        let received = expectation(description: "Response for \(rawPath)")
+        var buffer = Data()
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: try XCTUnwrap(NWEndpoint.Port(rawValue: port)),
+            using: .tcp
+        )
+        func receiveLoop() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                if let data { buffer.append(data) }
+                if isComplete || error != nil {
+                    received.fulfill()
+                    return
+                }
+                receiveLoop()
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            if case .ready = state {
+                connection.send(
+                    content: Data("GET \(rawPath) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8),
+                    completion: .contentProcessed { _ in }
+                )
+                receiveLoop()
+            }
+        }
+        connection.start(queue: .global())
+        defer { connection.cancel() }
+        wait(for: [received], timeout: 5)
+
+        let text = String(data: buffer, encoding: .utf8) ?? ""
+        return text
+            .components(separatedBy: "\r\n")
+            .first { $0.hasPrefix("Location:") }
+            .map { String($0.dropFirst("Location:".count)).trimmingCharacters(in: .whitespaces) }
+    }
+
     func testStalledResponseIsCancelledSoTheSlotIsReclaimed() throws {
         let fileManager = FileManager.default
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
