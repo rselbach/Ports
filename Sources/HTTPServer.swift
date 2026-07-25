@@ -161,16 +161,14 @@ class HTTPServer {
     private func handleConnection(_ connection: NWConnection) {
         if !exposeToLAN && !isLoopbackConnection(connection) {
             logger.notice("Rejected non-loopback connection on local-only server port \(self.port)")
-            sendError(connection, status: 403, message: "Forbidden")
-            connection.cancel()
+            rejectConnection(connection, status: 403, message: "Forbidden")
             return
         }
 
         connectionsLock.lock()
         guard connections.count < maxConnections else {
             connectionsLock.unlock()
-            sendError(connection, status: 503, message: "Service Unavailable - Too many connections")
-            connection.cancel()
+            rejectConnection(connection, status: 503, message: "Service Unavailable - Too many connections")
             return
         }
         connections.append(connection)
@@ -191,6 +189,14 @@ class HTTPServer {
 
         connection.start(queue: serverQueue)
         receiveRequest(connection)
+    }
+
+    /// Turns a connection away with a status the client can actually read. The
+    /// connection has to be started first, because a send queued before start()
+    /// is discarded by the cancel that follows it.
+    private func rejectConnection(_ connection: NWConnection, status: Int, message: String) {
+        connection.start(queue: serverQueue)
+        sendError(connection, status: status, message: message)
     }
 
     /// Arms the inactivity deadline for `connection`, replacing any deadline

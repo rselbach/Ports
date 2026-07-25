@@ -154,6 +154,95 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertEqual(try fetch(port: port, path: "/escape.txt").status, 403)
     }
 
+    func testConnectionOverTheLimitReceivesA503() throws {
+        let fileManager = FileManager.default
+        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: tempDir)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
+        }
+
+        let endpointPort = try XCTUnwrap(NWEndpoint.Port(rawValue: port))
+        let maxConnections = 50
+
+        // Fill every slot with connections that open and then say nothing.
+        var holders: [NWConnection] = []
+        let allReady = expectation(description: "Holding connections established")
+        allReady.expectedFulfillmentCount = maxConnections
+        for _ in 0..<maxConnections {
+            let holder = NWConnection(host: "127.0.0.1", port: endpointPort, using: .tcp)
+            var fulfilled = false
+            holder.stateUpdateHandler = { state in
+                if case .ready = state, !fulfilled {
+                    fulfilled = true
+                    allReady.fulfill()
+                }
+            }
+            holder.start(queue: .global())
+            holders.append(holder)
+        }
+        addTeardownBlock { holders.forEach { $0.cancel() } }
+        wait(for: [allReady], timeout: 10)
+
+        let got = try fetchStatusLine(port: port, endpointPort: endpointPort)
+        XCTAssertTrue(got.hasPrefix("HTTP/1.1 503"), "expected a 503 status line, got \(got.debugDescription)")
+    }
+
+    /// Connects, sends a request and returns the status line. Returns an empty
+    /// string when the server closes without writing anything.
+    private func fetchStatusLine(port: UInt16, endpointPort: NWEndpoint.Port) throws -> String {
+        let finished = expectation(description: "Response received")
+        var buffer = Data()
+        // The receive loop and the state handler can both reach the end; only
+        // the first one may fulfil.
+        let finishLock = NSLock()
+        var hasFinished = false
+        func finish() {
+            finishLock.lock()
+            defer { finishLock.unlock() }
+            guard !hasFinished else { return }
+            hasFinished = true
+            finished.fulfill()
+        }
+
+        let connection = NWConnection(host: "127.0.0.1", port: endpointPort, using: .tcp)
+        func receiveLoop() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                if let data { buffer.append(data) }
+                if isComplete || error != nil {
+                    finish()
+                    return
+                }
+                receiveLoop()
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(
+                    content: Data("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8),
+                    completion: .contentProcessed { _ in }
+                )
+                receiveLoop()
+            case .failed, .cancelled:
+                finish()
+            default:
+                break
+            }
+        }
+        connection.start(queue: .global())
+        defer { connection.cancel() }
+        wait(for: [finished], timeout: 10)
+
+        let text = String(data: buffer, encoding: .utf8) ?? ""
+        return text.components(separatedBy: "\r\n").first ?? ""
+    }
+
     func testDirectoryRedirectStaysOnThisServer() throws {
         let fileManager = FileManager.default
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
