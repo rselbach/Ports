@@ -23,8 +23,7 @@ final class HTTPServerTests: XCTestCase {
     func testServerStartsAndStops() throws {
         let tempDir = FileManager.default.temporaryDirectory
         // Use a random high port to avoid conflicts
-        let port: UInt16 = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir)
+        let server = HTTPServer(port: TestSupport.randomPort(), directory: tempDir)
 
         XCTAssertFalse(server.isRunning)
 
@@ -39,13 +38,11 @@ final class HTTPServerTests: XCTestCase {
 
     func testStartThrowsWhenPortIsAlreadyInUse() throws {
         let tempDir = FileManager.default.temporaryDirectory
-        let port = UInt16.random(in: 49000...49999)
 
-        let holder = HTTPServer(port: port, directory: tempDir)
-        try holder.start()
+        let holder = try TestSupport.startServer(directory: tempDir)
         addTeardownBlock { holder.stop() }
 
-        let contender = HTTPServer(port: port, directory: tempDir)
+        let contender = HTTPServer(port: holder.port, directory: tempDir)
         XCTAssertThrowsError(try contender.start(), "binding an occupied port must fail synchronously")
         XCTAssertFalse(contender.isRunning, "a server that failed to bind must not report itself as running")
     }
@@ -91,9 +88,8 @@ final class HTTPServerTests: XCTestCase {
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         try Data("# Greendale".utf8).write(to: tempDir.appendingPathComponent("notes.md"))
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir)
-        try server.start()
+        let server = try TestSupport.startServer(directory: tempDir)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
@@ -157,9 +153,8 @@ final class HTTPServerTests: XCTestCase {
         try fileManager.createSymbolicLink(at: root.appendingPathComponent("index.html"), withDestinationURL: secret)
         try fileManager.createSymbolicLink(at: root.appendingPathComponent("sub/index.html"), withDestinationURL: secret)
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: root)
-        try server.start()
+        let server = try TestSupport.startServer(directory: root)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: base))
@@ -183,9 +178,8 @@ final class HTTPServerTests: XCTestCase {
         try Data("I am a real professor".utf8).write(to: secret)
         try fileManager.createSymbolicLink(at: root.appendingPathComponent("escape.txt"), withDestinationURL: secret)
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: root)
-        try server.start()
+        let server = try TestSupport.startServer(directory: root)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: base))
@@ -199,9 +193,8 @@ final class HTTPServerTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir)
-        try server.start()
+        let server = try TestSupport.startServer(directory: tempDir)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
@@ -289,9 +282,8 @@ final class HTTPServerTests: XCTestCase {
         // A directory whose name would be read as a host in a "//" redirect.
         try fileManager.createDirectory(at: tempDir.appendingPathComponent("greendale.edu"), withIntermediateDirectories: true)
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir)
-        try server.start()
+        let server = try TestSupport.startServer(directory: tempDir)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
@@ -361,9 +353,8 @@ final class HTTPServerTests: XCTestCase {
         for _ in 0..<(fileSizeBytes / megabyte.count) { writer.write(megabyte) }
         try writer.close()
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir, requestTimeout: 1)
-        try server.start()
+        let server = try TestSupport.startServer(directory: tempDir, requestTimeout: 1)
+        let port = server.port
         addTeardownBlock {
             server.stop()
             XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
@@ -422,9 +413,8 @@ final class HTTPServerTests: XCTestCase {
         let wantData = Data((0..<(512 * 1024)).map { UInt8($0 % 251) })
         try wantData.write(to: fileURL)
 
-        let port = UInt16.random(in: 49000...49999)
-        let server = HTTPServer(port: port, directory: tempDir)
-        try server.start()
+        let server = try TestSupport.startServer(directory: tempDir)
+        let port = server.port
 
         addTeardownBlock {
             server.stop()

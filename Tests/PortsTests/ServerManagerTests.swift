@@ -36,8 +36,8 @@ final class ServerManagerTests: XCTestCase {
         // Never created: stands in for a folder on a volume that is not mounted.
         let unmounted = tempRoot.appendingPathComponent("ExternalDrive/Shared", isDirectory: true)
 
-        let availablePort = UInt16.random(in: 49000...49499)
-        let unmountedPort = UInt16.random(in: 49500...49999)
+        let availablePort = TestSupport.randomPort()
+        let unmountedPort = TestSupport.randomPort()
         try persist([
             SavedServer(port: availablePort, directoryPath: available.path, exposeToLAN: false),
             SavedServer(port: unmountedPort, directoryPath: unmounted.path, exposeToLAN: false),
@@ -60,9 +60,8 @@ final class ServerManagerTests: XCTestCase {
         let directory = tempRoot.appendingPathComponent("Study Room F", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let configuredPort = UInt16.random(in: 49000...49999)
-        let squatter = HTTPServer(port: configuredPort, directory: directory)
-        try squatter.start()
+        let squatter = try TestSupport.startServer(directory: directory)
+        let configuredPort = squatter.port
         addTeardownBlock { squatter.stop() }
 
         try persist([SavedServer(port: configuredPort, directoryPath: directory.path, exposeToLAN: false)])
@@ -84,8 +83,8 @@ final class ServerManagerTests: XCTestCase {
 
         let manager = ServerManager(portScanner: PortScanner())
         addTeardownBlock { manager.stopAllServers() }
-        try manager.startServer(port: UInt16.random(in: 49000...49499), directory: first, exposeToLAN: false)
-        try manager.startServer(port: UInt16.random(in: 49500...49999), directory: second, exposeToLAN: false)
+        try manager.startServer(port: TestSupport.randomPort(), directory: first, exposeToLAN: false)
+        try manager.startServer(port: TestSupport.randomPort(), directory: second, exposeToLAN: false)
         XCTAssertEqual(try persisted().count, 2)
 
         let toStop = try XCTUnwrap(manager.snapshotServers().first { $0.directory.path == first.path })
