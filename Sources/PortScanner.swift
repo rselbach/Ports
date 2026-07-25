@@ -2,6 +2,12 @@ import Foundation
 import Darwin
 import os
 
+/// Carries a pipe's contents back from the queue that drained it. Handing the
+/// value over through the reader queue establishes the ordering.
+private final class DataBox {
+    var value = Data()
+}
+
 struct PortInfo: Hashable {
     let port: UInt16
     let pid: Int32
@@ -62,28 +68,37 @@ class PortScanner {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             logger.error("Failed to run lsof: \(error.localizedDescription, privacy: .public)")
             return ""
         }
 
+        // Both pipes must be drained while lsof is still running. Waiting for it
+        // to exit first deadlocks as soon as either stream fills the 64 KiB pipe
+        // buffer, because lsof then blocks in write() and never exits.
+        let errorReader = DispatchQueue(label: "com.rselbach.ports.lsof.stderr")
+        let collectedError = DataBox()
+        errorReader.async {
+            collectedError.value = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        errorReader.sync {}
+
+        process.waitUntilExit()
+
         let output = String(data: data, encoding: .utf8) ?? ""
         let terminationStatus = process.terminationStatus
-        if terminationStatus != 0 && output.isEmpty {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "unknown error"
+        guard terminationStatus != 0 else {
+            return output
+        }
+
+        let errorMessage = String(data: collectedError.value, encoding: .utf8) ?? "unknown error"
+        if output.isEmpty {
             logger.error("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
             return ""
         }
 
-        if terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "unknown error"
-            logger.notice("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
-        }
-
+        logger.notice("lsof exited with status \(terminationStatus): \(errorMessage, privacy: .public)")
         return output
     }
 
