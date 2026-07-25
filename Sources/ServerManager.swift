@@ -163,6 +163,7 @@ final class ServerManager: HTTPServerDelegate {
     }
 
     func server(_ server: HTTPServer, didFailWithError error: Error) {
+        server.stop()
         removeServer(server)
         saveServers()
         DispatchQueue.main.async { [weak self] in

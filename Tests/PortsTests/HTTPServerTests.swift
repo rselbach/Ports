@@ -37,6 +37,19 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertFalse(server.isRunning)
     }
 
+    func testStartThrowsWhenPortIsAlreadyInUse() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+        let port = UInt16.random(in: 49000...49999)
+
+        let holder = HTTPServer(port: port, directory: tempDir)
+        try holder.start()
+        addTeardownBlock { holder.stop() }
+
+        let contender = HTTPServer(port: port, directory: tempDir)
+        XCTAssertThrowsError(try contender.start(), "binding an occupied port must fail synchronously")
+        XCTAssertFalse(contender.isRunning, "a server that failed to bind must not report itself as running")
+    }
+
     func testServerHandlesPortZero() throws {
         let tempDir = FileManager.default.temporaryDirectory
         // Port 0 tells the OS to pick any available port

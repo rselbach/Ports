@@ -37,6 +37,43 @@ protocol HTTPServerDelegate: AnyObject {
     func server(_ server: HTTPServer, didFailWithError error: Error)
 }
 
+/// Bridges the listener's asynchronous readiness back to the synchronous
+/// `start()` call so a bind failure such as EADDRINUSE reaches the caller
+/// instead of surfacing later as a server that silently disappears.
+private final class ListenerStartup {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var isSettled = false
+    private var error: Error?
+
+    /// Records the first terminal startup outcome. Returns true when this call
+    /// is the one that settled it, meaning `start()` will report the outcome.
+    @discardableResult
+    func settle(with error: Error?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isSettled else { return false }
+        isSettled = true
+        self.error = error
+        semaphore.signal()
+        return true
+    }
+
+    /// Blocks until the listener is ready or has failed, returning the failure
+    /// if there was one. Giving up leaves the listener running and hands any
+    /// later failure to the delegate.
+    func waitForOutcome(timeout: TimeInterval) -> Error? {
+        let timedOut = semaphore.wait(timeout: .now() + timeout) == .timedOut
+        lock.lock()
+        defer { lock.unlock() }
+        if timedOut && !isSettled {
+            isSettled = true
+            return nil
+        }
+        return error
+    }
+}
+
 class HTTPServer {
     let port: UInt16
     let directory: URL
@@ -48,6 +85,7 @@ class HTTPServer {
     private let maxRequestHeaderBytes = 64 * 1024
     private let requestTimeout: TimeInterval
     private let fileChunkSizeBytes = 64 * 1024
+    private let startupTimeout: TimeInterval = 5
     private let connectionsLock = NSLock()
     private let serverQueue = DispatchQueue(label: "com.rselbach.ports.httpserver", qos: .userInitiated, attributes: .concurrent)
     private let logger = Logger(
@@ -73,17 +111,24 @@ class HTTPServer {
             throw NSError(domain: "HTTPServer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid port: \(port)"])
         }
 
-        listener = try NWListener(using: params, on: endpointPort)
-        
-        listener?.newConnectionHandler = { [weak self] connection in
+        let listener = try NWListener(using: params, on: endpointPort)
+
+        listener.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
-        
-        listener?.stateUpdateHandler = { [weak self] state in
+
+        let startup = ListenerStartup()
+        listener.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
+            case .ready:
+                startup.settle(with: nil)
             case .failed(let error):
-                self.delegate?.server(self, didFailWithError: error)
+                // A failure during startup is thrown from start(); only later
+                // ones are the delegate's to handle.
+                if !startup.settle(with: error) {
+                    self.delegate?.server(self, didFailWithError: error)
+                }
             case .cancelled:
                 self.connectionsLock.lock()
                 self.connections.removeAll { $0.state == .cancelled }
@@ -92,8 +137,14 @@ class HTTPServer {
                 break
             }
         }
-        
-        listener?.start(queue: serverQueue)
+
+        self.listener = listener
+        listener.start(queue: serverQueue)
+
+        if let error = startup.waitForOutcome(timeout: startupTimeout) {
+            stop()
+            throw error
+        }
     }
     
     func stop() {

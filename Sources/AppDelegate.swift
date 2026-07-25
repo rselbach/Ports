@@ -44,6 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
             guard let self else { return }
             self.logger.error("Server on port \(server.port) failed: \(error.localizedDescription, privacy: .public)")
             self.rebuildMenuItems()
+            self.showError("Server on port \(server.port) stopped: \(error.localizedDescription)")
         }
 
         setupMenuBar()
