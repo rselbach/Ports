@@ -23,6 +23,25 @@ enum HTTPUtilities {
         return encodedPath
     }
 
+    /// Maps a file extension to a Content-Type. Anything unrecognised falls
+    /// back to application/octet-stream rather than inviting a guess.
+    static func mimeType(forExtension ext: String) -> String {
+        switch ext.lowercased() {
+        case "html", "htm": return "text/html; charset=utf-8"
+        case "css": return "text/css"
+        case "js": return "application/javascript"
+        case "json": return "application/json"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "svg": return "image/svg+xml"
+        case "pdf": return "application/pdf"
+        case "txt": return "text/plain; charset=utf-8"
+        case "md": return "text/markdown; charset=utf-8"
+        default: return "application/octet-stream"
+        }
+    }
+
     /// Sanitizes a header value to prevent CRLF injection.
     /// Removes any carriage returns, line feeds, and null bytes.
     static func sanitizedHeaderValue(_ value: String) -> String {
@@ -362,7 +381,7 @@ class HTTPServer {
             return
         }
 
-        let mimeType = mimeType(for: url.pathExtension)
+        let mimeType = HTTPUtilities.mimeType(forExtension: url.pathExtension)
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: \(mimeType)\r
@@ -550,23 +569,6 @@ class HTTPServer {
         return nil
     }
     
-    private func mimeType(for ext: String) -> String {
-        switch ext.lowercased() {
-        case "html", "htm": return "text/html; charset=utf-8"
-        case "css": return "text/css"
-        case "js": return "application/javascript"
-        case "json": return "application/json"
-        case "png": return "image/png"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "gif": return "image/gif"
-        case "svg": return "image/svg+xml"
-        case "pdf": return "application/pdf"
-        case "txt": return "text/plain; charset=utf-8"
-        case "md": return "text/markdown; charset=utf-8"
-        default: return "application/octet-stream"
-        }
-    }
-
     private func normalizedRequestPath(_ rawPath: String) -> (requestPath: String, relativePath: String) {
         let pathPart = rawPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let fragmentPart = pathPart.first?.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)

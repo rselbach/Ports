@@ -102,7 +102,9 @@ class PortScanner {
         return output
     }
 
-    private func parseLsofOutput(_ output: String) -> [PortInfo] {
+    /// Parses `lsof -Fpcn` field output. Internal so the parsing rules can be
+    /// tested against captured output without running lsof.
+    func parseLsofOutput(_ output: String) -> [PortInfo] {
         var ports: [PortInfo] = []
         var seen = Set<UInt16>()
         var currentPid: Int32?

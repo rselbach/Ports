@@ -52,27 +52,67 @@ final class HTTPServerTests: XCTestCase {
 
     func testServerHandlesPortZero() throws {
         let tempDir = FileManager.default.temporaryDirectory
-        // Port 0 tells the OS to pick any available port
+        // Port 0 tells the OS to pick any available port.
         let server = HTTPServer(port: 0, directory: tempDir)
 
-        // This may or may not succeed depending on NWListener behavior
-        // The test verifies it doesn't crash
-        do {
-            try server.start()
-            server.stop()
-        } catch {
-            // Acceptable - port 0 might not be supported
-        }
+        try server.start()
+        XCTAssertTrue(server.isRunning)
+        server.stop()
+        XCTAssertFalse(server.isRunning)
     }
 
     func testMimeTypeReturnsCorrectTypes() {
-        // Test via reflection or make mimeType public if needed
-        // For now, we test indirectly through the server
-        let tempDir = FileManager.default.temporaryDirectory
-        let server = HTTPServer(port: 8080, directory: tempDir)
+        let cases = [
+            "html": "text/html; charset=utf-8",
+            "htm": "text/html; charset=utf-8",
+            "HTML": "text/html; charset=utf-8",
+            "css": "text/css",
+            "js": "application/javascript",
+            "json": "application/json",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "svg": "image/svg+xml",
+            "pdf": "application/pdf",
+            "txt": "text/plain; charset=utf-8",
+            "md": "text/markdown; charset=utf-8",
+            "exe": "application/octet-stream",
+            "": "application/octet-stream",
+        ]
+        for (ext, want) in cases {
+            XCTAssertEqual(HTTPUtilities.mimeType(forExtension: ext), want, "extension \(ext.debugDescription)")
+        }
+    }
 
-        // Server should initialize without issues
-        XCTAssertNotNil(server)
+    func testServedFileCarriesTheMatchingContentType() throws {
+        let fileManager = FileManager.default
+        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try Data("# Greendale".utf8).write(to: tempDir.appendingPathComponent("notes.md"))
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: tempDir)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
+        }
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let url = try XCTUnwrap(URL(string: "http://localhost:\(port)/notes.md"))
+        let received = expectation(description: "Response received")
+        var gotResponse: URLResponse?
+        session.dataTask(with: url) { _, response, _ in
+            gotResponse = response
+            received.fulfill()
+        }.resume()
+        wait(for: [received], timeout: 5)
+
+        let response = try XCTUnwrap(gotResponse as? HTTPURLResponse)
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "text/markdown; charset=utf-8")
+        XCTAssertEqual(response.value(forHTTPHeaderField: "X-Content-Type-Options"), "nosniff")
     }
 
     /// Fetches `path` and returns the status code plus the body as a string.
