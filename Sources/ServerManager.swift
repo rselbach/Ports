@@ -34,6 +34,12 @@ final class ServerManager: HTTPServerDelegate {
         category: "ServerManager"
     )
     private var activeServers: [HTTPServer] = []
+    /// The port the user chose for each live server, which differs from the one
+    /// it listens on when that port was busy at restore time.
+    private var configuredPorts: [ObjectIdentifier: UInt16] = [:]
+    /// Saved entries that could not be restored this session. Kept so a later
+    /// save does not drop them.
+    private var unavailableEntries: [SavedServer] = []
     private let activeServersLock = NSLock()
 
     var onServerFailure: ((HTTPServer, Error) -> Void)?
@@ -74,7 +80,7 @@ final class ServerManager: HTTPServerDelegate {
         let server = HTTPServer(port: port, directory: directory, exposeToLAN: exposeToLAN)
         server.delegate = self
         try server.start()
-        addServer(server)
+        addServer(server, configuredPort: port)
         saveServers()
     }
 
@@ -108,10 +114,13 @@ final class ServerManager: HTTPServerDelegate {
         let usedPorts = Set(portScanner.scan().map { $0.port })
         var reservedPorts = Set<UInt16>()
         var restoredLANServers: [HTTPServer] = []
+        var unavailable: [SavedServer] = []
 
         for entry in saved {
             let directory = URL(fileURLWithPath: entry.directoryPath)
             guard FileManager.default.fileExists(atPath: directory.path) else {
+                logger.notice("Directory for saved server on port \(entry.port) is unavailable; keeping the entry")
+                unavailable.append(entry)
                 continue
             }
 
@@ -128,18 +137,21 @@ final class ServerManager: HTTPServerDelegate {
             server.delegate = self
             do {
                 try server.start()
-                addServer(server)
+                addServer(server, configuredPort: entry.port)
                 if entry.exposeToLAN {
                     restoredLANServers.append(server)
                 }
             } catch {
                 logger.error("Failed to restore server on port \(port): \(error.localizedDescription, privacy: .public)")
+                unavailable.append(entry)
             }
         }
 
-        if !snapshotServers().isEmpty {
-            saveServers()
-        }
+        activeServersLock.lock()
+        unavailableEntries = unavailable
+        activeServersLock.unlock()
+
+        saveServers()
 
         return restoredLANServers
     }
@@ -150,9 +162,18 @@ final class ServerManager: HTTPServerDelegate {
             return
         }
 
-        let saved = snapshotServers().map {
-            SavedServer(port: $0.port, directoryPath: $0.directory.path, exposeToLAN: $0.exposeToLAN)
-        }
+        activeServersLock.lock()
+        // Persist the port the user chose rather than a temporary one taken
+        // because theirs was busy, and re-emit entries that could not be
+        // restored so they survive to the next launch.
+        let saved = activeServers.map {
+            SavedServer(
+                port: configuredPorts[ObjectIdentifier($0)] ?? $0.port,
+                directoryPath: $0.directory.path,
+                exposeToLAN: $0.exposeToLAN
+            )
+        } + unavailableEntries
+        activeServersLock.unlock()
 
         do {
             let data = try JSONEncoder().encode(saved)
@@ -171,15 +192,19 @@ final class ServerManager: HTTPServerDelegate {
         }
     }
 
-    private func addServer(_ server: HTTPServer) {
+    private func addServer(_ server: HTTPServer, configuredPort: UInt16) {
         activeServersLock.lock()
         activeServers.append(server)
+        configuredPorts[ObjectIdentifier(server)] = configuredPort
+        // Serving this directory again supersedes any entry held for it.
+        unavailableEntries.removeAll { $0.directoryPath == server.directory.path }
         activeServersLock.unlock()
     }
 
     private func removeServer(_ server: HTTPServer) {
         activeServersLock.lock()
         activeServers.removeAll { $0 === server }
+        configuredPorts.removeValue(forKey: ObjectIdentifier(server))
         activeServersLock.unlock()
     }
 
