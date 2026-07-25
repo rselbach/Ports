@@ -61,6 +61,85 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertNotNil(server)
     }
 
+    /// Fetches `path` and returns the status code plus the body as a string.
+    private func fetch(port: UInt16, path: String, file: StaticString = #filePath, line: UInt = #line) throws -> (status: Int, body: String) {
+        let url = try XCTUnwrap(URL(string: "http://localhost:\(port)\(path)"), file: file, line: line)
+        // A fresh session per request: the server sends "Connection: close", so a
+        // pooled connection from an earlier request would fail with -1005.
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let expectation = expectation(description: "Fetch \(path)")
+
+        var gotData: Data?
+        var gotResponse: URLResponse?
+        var gotError: Error?
+        let task = session.dataTask(with: url) { data, response, error in
+            gotData = data
+            gotResponse = response
+            gotError = error
+            expectation.fulfill()
+        }
+        task.resume()
+        waitForExpectations(timeout: 5)
+
+        XCTAssertNil(gotError, file: file, line: line)
+        let response = try XCTUnwrap(gotResponse as? HTTPURLResponse, file: file, line: line)
+        return (response.statusCode, String(data: gotData ?? Data(), encoding: .utf8) ?? "")
+    }
+
+    func testSymlinkedIndexFileIsNotServedFromOutsideRoot() throws {
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = base.appendingPathComponent("serve", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try fileManager.createDirectory(at: root.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        let secret = outside.appendingPathComponent("greendale-transcript.txt")
+        let secretBody = "Troy Barnes, Air Conditioning Repair Annex"
+        try Data(secretBody.utf8).write(to: secret)
+
+        // Both the root index and a subdirectory index point outside the served root.
+        try fileManager.createSymbolicLink(at: root.appendingPathComponent("index.html"), withDestinationURL: secret)
+        try fileManager.createSymbolicLink(at: root.appendingPathComponent("sub/index.html"), withDestinationURL: secret)
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: root)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: base))
+        }
+
+        for path in ["/", "/sub/"] {
+            let got = try fetch(port: port, path: path)
+            XCTAssertEqual(got.status, 200, "\(path) should fall back to a directory listing")
+            XCTAssertFalse(got.body.contains(secretBody), "\(path) leaked a file from outside the served root")
+            XCTAssertTrue(got.body.contains("Index of"), "\(path) should have served a directory listing")
+        }
+    }
+
+    func testSymlinkedFileRequestedDirectlyIsForbidden() throws {
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = base.appendingPathComponent("serve", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let secret = base.appendingPathComponent("senor-chang.txt")
+        try Data("I am a real professor".utf8).write(to: secret)
+        try fileManager.createSymbolicLink(at: root.appendingPathComponent("escape.txt"), withDestinationURL: secret)
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: root)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: base))
+        }
+
+        XCTAssertEqual(try fetch(port: port, path: "/escape.txt").status, 403)
+    }
+
     func testServerStreamsLargeFile() throws {
         let fileManager = FileManager.default
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

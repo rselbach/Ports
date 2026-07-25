@@ -247,7 +247,7 @@ class HTTPServer {
                     sendRedirect(to: redirectPath, connection: connection)
                     return
                 }
-                if let indexFile = findIndexFile(in: filePath) {
+                if let indexFile = findIndexFile(in: filePath, inside: rootDir) {
                     serveFile(indexFile, connection: connection)
                 } else {
                     serveDirectoryListing(filePath, requestPath: requestPath, connection: connection)
@@ -458,10 +458,17 @@ class HTTPServer {
         sendResponse(Data(response.utf8), connection: connection)
     }
     
-    private func findIndexFile(in dir: URL) -> URL? {
+    /// Returns the first index file in `dir` that still resolves inside `root`.
+    /// The candidate is symlink-resolved before the containment check so a
+    /// symlinked index file cannot escape the served directory.
+    private func findIndexFile(in dir: URL, inside root: URL) -> URL? {
         let indexFiles = ["index.html", "index.htm"]
         for filename in indexFiles {
-            let candidate = dir.appendingPathComponent(filename)
+            let candidate = dir.appendingPathComponent(filename).resolvingSymlinksInPath().standardizedFileURL
+            guard isPath(candidate, inside: root) else {
+                logger.notice("Refused index file outside the served directory on port \(self.port)")
+                continue
+            }
             if FileManager.default.fileExists(atPath: candidate.path) {
                 return candidate
             }
