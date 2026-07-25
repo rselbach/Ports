@@ -18,6 +18,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private var updaterController: SPUStandardUpdaterController?
     private var checkForUpdatesObserver: AnyCancellable?
     private var preferencesWindow: NSWindow?
+    private var statusItemImage: NSImage?
+    private var copyConfirmationReset: DispatchWorkItem?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
         category: "AppDelegate"
@@ -68,7 +70,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Ports")
+            let image = NSImage(systemSymbolName: "network", accessibilityDescription: "Ports")
+            button.image = image
+            statusItemImage = image
         }
 
         statusMenu = NSMenu()
@@ -720,11 +724,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
 
     private func showCopyConfirmation() {
         guard let button = statusItem.button else { return }
-        let originalImage = button.image
+        // Never read the icon back off the button: a confirmation already on
+        // screen would be captured as the image to restore.
+        copyConfirmationReset?.cancel()
         button.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
-            self?.statusItem.button?.image = originalImage
+
+        let reset = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.statusItem.button?.image = self.statusItemImage
+            self.copyConfirmationReset = nil
         }
+        copyConfirmationReset = reset
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: reset)
     }
 
 }
