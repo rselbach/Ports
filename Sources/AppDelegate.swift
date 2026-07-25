@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import os
 import Sparkle
@@ -15,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
     private var portWarningLabel: NSTextField?
     private var portObserver: NSObjectProtocol?
     private var updaterController: SPUStandardUpdaterController?
+    private var checkForUpdatesObserver: AnyCancellable?
     private var preferencesWindow: NSWindow?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.rselbach.ports",
@@ -33,11 +35,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDele
         
         if let frameworksPath = Bundle.main.privateFrameworksPath,
            FileManager.default.fileExists(atPath: "\(frameworksPath)/Sparkle.framework") {
-            updaterController = SPUStandardUpdaterController(
-                startingUpdater: settings.checkForUpdates,
+            // Always start the updater: Sparkle refuses a manual check on one
+            // that was never started. The preference governs automatic checks
+            // only, so apply it to the updater rather than to startup.
+            let controller = SPUStandardUpdaterController(
+                startingUpdater: true,
                 updaterDelegate: nil,
                 userDriverDelegate: nil
             )
+            controller.updater.automaticallyChecksForUpdates = settings.checkForUpdates
+            updaterController = controller
+            checkForUpdatesObserver = settings.$checkForUpdates.sink { [weak controller] enabled in
+                controller?.updater.automaticallyChecksForUpdates = enabled
+            }
         }
 
         serverManager.onServerFailure = { [weak self] server, error in
