@@ -46,7 +46,7 @@ class HTTPServer {
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     private let maxConnections = 50
     private let maxRequestHeaderBytes = 64 * 1024
-    private let requestTimeout: TimeInterval = 30
+    private let requestTimeout: TimeInterval
     private let fileChunkSizeBytes = 64 * 1024
     private let connectionsLock = NSLock()
     private let serverQueue = DispatchQueue(label: "com.rselbach.ports.httpserver", qos: .userInitiated, attributes: .concurrent)
@@ -58,10 +58,11 @@ class HTTPServer {
     
     var isRunning: Bool { listener != nil }
     
-    init(port: UInt16, directory: URL, exposeToLAN: Bool = false) {
+    init(port: UInt16, directory: URL, exposeToLAN: Bool = false, requestTimeout: TimeInterval = 30) {
         self.port = port
         self.directory = directory
         self.exposeToLAN = exposeToLAN
+        self.requestTimeout = requestTimeout
     }
     
     func start() throws {
@@ -125,16 +126,7 @@ class HTTPServer {
         connectionsLock.unlock()
 
         let connectionId = ObjectIdentifier(connection)
-        let timeoutWorkItem = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            self.logger.debug("Connection timeout on port \(self.port)")
-            self.cancelConnectionTimeout(connectionId)
-            connection.cancel()
-        }
-        connectionsLock.lock()
-        connectionTimeouts[connectionId] = timeoutWorkItem
-        connectionsLock.unlock()
-        serverQueue.asyncAfter(deadline: .now() + requestTimeout, execute: timeoutWorkItem)
+        scheduleConnectionTimeout(connection)
 
         connection.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -148,6 +140,25 @@ class HTTPServer {
 
         connection.start(queue: serverQueue)
         receiveRequest(connection)
+    }
+
+    /// Arms the inactivity deadline for `connection`, replacing any deadline
+    /// already pending for it. Re-arming on every unit of progress means a slow
+    /// but advancing transfer survives while a stalled one is cancelled and its
+    /// slot returned to the connection pool.
+    private func scheduleConnectionTimeout(_ connection: NWConnection) {
+        let connectionId = ObjectIdentifier(connection)
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.logger.debug("Connection timed out on port \(self.port)")
+            self.cancelConnectionTimeout(connectionId)
+            connection.cancel()
+        }
+        connectionsLock.lock()
+        connectionTimeouts[connectionId]?.cancel()
+        connectionTimeouts[connectionId] = timeoutWorkItem
+        connectionsLock.unlock()
+        serverQueue.asyncAfter(deadline: .now() + requestTimeout, execute: timeoutWorkItem)
     }
 
     private func cancelConnectionTimeout(_ connectionId: ObjectIdentifier) {
@@ -191,7 +202,9 @@ class HTTPServer {
                     self.sendError(connection, status: 400, message: "Bad Request")
                     return
                 }
-                self.cancelConnectionTimeout(connectionId)
+                // Re-arm for the response: the header phase is done, but the
+                // reply still has to reach a client that may stop reading.
+                self.scheduleConnectionTimeout(connection)
                 self.handleRequest(request, connection: connection)
                 return
             }
@@ -433,6 +446,7 @@ class HTTPServer {
                 connection.cancel()
                 return
             }
+            scheduleConnectionTimeout(connection)
             sendNextFileChunk(fileHandle: fileHandle, path: path, connection: connection)
         })
     }

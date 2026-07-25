@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import Ports
 
@@ -138,6 +139,73 @@ final class HTTPServerTests: XCTestCase {
         }
 
         XCTAssertEqual(try fetch(port: port, path: "/escape.txt").status, 403)
+    }
+
+    func testStalledResponseIsCancelledSoTheSlotIsReclaimed() throws {
+        let fileManager = FileManager.default
+        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        // Large enough that the send cannot complete into socket buffers alone,
+        // so the transfer stalls against a client that never reads.
+        let fileSizeBytes = 64 * 1024 * 1024
+        let fileURL = tempDir.appendingPathComponent("annies-move.bin")
+        fileManager.createFile(atPath: fileURL.path, contents: nil)
+        let writer = try FileHandle(forWritingTo: fileURL)
+        let megabyte = Data(repeating: 0x41, count: 1024 * 1024)
+        for _ in 0..<(fileSizeBytes / megabyte.count) { writer.write(megabyte) }
+        try writer.close()
+
+        let port = UInt16.random(in: 49000...49999)
+        let server = HTTPServer(port: port, directory: tempDir, requestTimeout: 1)
+        try server.start()
+        addTeardownBlock {
+            server.stop()
+            XCTAssertNoThrow(try fileManager.removeItem(at: tempDir))
+        }
+
+        let requestSent = expectation(description: "Request sent")
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: try XCTUnwrap(NWEndpoint.Port(rawValue: port)),
+            using: .tcp
+        )
+        connection.stateUpdateHandler = { state in
+            if case .ready = state {
+                // Send a complete request and then read nothing, so the server's
+                // send stalls once the socket buffers fill.
+                connection.send(
+                    content: Data("GET /annies-move.bin HTTP/1.1\r\nHost: h\r\n\r\n".utf8),
+                    completion: .contentProcessed { _ in requestSent.fulfill() }
+                )
+            }
+        }
+        connection.start(queue: .global())
+        addTeardownBlock { connection.cancel() }
+        wait(for: [requestSent], timeout: 5)
+
+        // Stay silent well past the 1s deadline, then drain. A reaped connection
+        // yields only what was already buffered; before the fix the deadline was
+        // dropped at header-parse time, so draining here simply resumed the
+        // transfer and delivered the whole file.
+        Thread.sleep(forTimeInterval: 3)
+
+        let drained = expectation(description: "Connection drained to completion")
+        var received = 0
+        func drain() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, isComplete, error in
+                received += data?.count ?? 0
+                if isComplete || error != nil {
+                    drained.fulfill()
+                    return
+                }
+                drain()
+            }
+        }
+        drain()
+        wait(for: [drained], timeout: 20)
+
+        XCTAssertLessThan(received, fileSizeBytes / 2, "server kept streaming instead of reaping the stalled connection")
     }
 
     func testServerStreamsLargeFile() throws {
